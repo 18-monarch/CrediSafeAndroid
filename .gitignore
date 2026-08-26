@@ -1,0 +1,142 @@
+# ============================================================
+# CrediSafe Android + Backend
+# Root Git Ignore
+# ============================================================
+
+# ------------------------------------------------------------
+# Android / Gradle / Android Studio
+# ------------------------------------------------------------
+
+.gradle/
+**/.gradle/
+
+.idea/
+**/.idea/
+
+.kotlin/
+**/.kotlin/
+
+local.properties
+**/local.properties
+
+*.iml
+**/*.iml
+
+build/
+**/build/
+
+.cxx/
+**/.cxx/
+
+.externalNativeBuild/
+**/.externalNativeBuild/
+
+# Android packaged/generated artifacts
+*.apk
+*.aab
+
+# ------------------------------------------------------------
+# Node.js / TypeScript backend
+# ------------------------------------------------------------
+
+node_modules/
+**/node_modules/
+
+dist/
+**/dist/
+
+coverage/
+**/coverage/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# ------------------------------------------------------------
+# Environment variables / secrets
+# ------------------------------------------------------------
+
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Safe templates may be committed
+!.env.example
+!.env.template
+**/!.env.example
+**/!.env.template
+
+# Private/signing credentials
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# ------------------------------------------------------------
+# Backend temporary/runtime files
+# ------------------------------------------------------------
+
+backend/tmp/
+backend/temp/
+backend/.cache/
+backend/uploads/
+backend/exports/
+
+# Local database files
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.dump
+backend/*.backup
+
+# ------------------------------------------------------------
+# Logs
+# ------------------------------------------------------------
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ------------------------------------------------------------
+# Test / generated reports
+# ------------------------------------------------------------
+
+test-results/
+**/test-results/
+
+test-output/
+**/test-output/
+
+playwright-report/
+coverage-report/
+
+# ------------------------------------------------------------
+# OS-generated files
+# ------------------------------------------------------------
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------------------------
+# Temporary/editor files
+# ------------------------------------------------------------
+
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.orig
+*.rej
+
+# ------------------------------------------------------------
+# Archives / local bundles
+# ------------------------------------------------------------
+
+*.zip
+*.tar
+*.tar.gz
+*.7z

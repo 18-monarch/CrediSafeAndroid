@@ -1,0 +1,12 @@
+CrediSafe-main.zip was supplied by the project owner.
+Relevant source inspected for the Android conversion:
+- components/MobileExperience.tsx
+- components/mvp/AppShell.tsx
+- components/mvp/TripRecorder.tsx
+- components/mvp/XpBreakdown.tsx
+- components/mvp/UI.tsx
+- app/app/mvp.css
+- app/globals.css
+- lib/mvp/scoring.ts
+- lib/mvp/types.ts
+- docs/UNIFIED_ARCHITECTURE.md
