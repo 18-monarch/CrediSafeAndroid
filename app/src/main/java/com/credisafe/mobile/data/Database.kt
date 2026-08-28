@@ -10,6 +10,8 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.UUID
 
+data class Vehicle(val id: String, val make: String, val model: String)
+
 class CrediSafeDb(context: Context) :
     SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
 
@@ -157,11 +159,11 @@ class CrediSafeDb(context: Context) :
         }
     }
 
-    fun createTrip(): String {
+    fun createTrip(userId: String?, vehicleId: String?): String {
         val id = UUID.randomUUID().toString()
         writableDatabase.execSQL(
-            "INSERT INTO trips(id,started_at,status,client_trip_id) VALUES(?,?,?,?)",
-            arrayOf<Any?>(id, System.currentTimeMillis(), "RECORDING", id),
+            "INSERT INTO trips(id,started_at,status,client_trip_id,user_id,vehicle_id) VALUES(?,?,?,?,?,?)",
+            arrayOf<Any?>(id, System.currentTimeMillis(), "RECORDING", id, userId, vehicleId),
         )
         return id
     }
@@ -436,6 +438,27 @@ class CrediSafeDb(context: Context) :
     private fun getDoubleOrNull(c: android.database.Cursor, column: String): Double? {
         val idx = c.getColumnIndex(column)
         return if (idx < 0 || c.isNull(idx)) null else c.getDouble(idx)
+    }
+
+    fun listVehicles(userId: String): List<Vehicle> {
+        val out = mutableListOf<Vehicle>()
+        readableDatabase.query("vehicles", null, "user_id=?", arrayOf(userId), null, null, "make ASC").use { c ->
+            while (c.moveToNext()) {
+                out += Vehicle(
+                    c.getString(c.getColumnIndexOrThrow("id")),
+                    c.getString(c.getColumnIndexOrThrow("make")),
+                    c.getString(c.getColumnIndexOrThrow("model"))
+                )
+            }
+        }
+        return out
+    }
+
+    fun insertVehicle(userId: String, make: String, model: String) {
+        writableDatabase.execSQL(
+            "INSERT INTO vehicles(id, user_id, make, model) VALUES(?,?,?,?)",
+            arrayOf(UUID.randomUUID().toString(), userId, make, model)
+        )
     }
 
     fun tripCountOnLocalDate(epochMs: Long): Int {

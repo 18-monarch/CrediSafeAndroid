@@ -3,7 +3,7 @@ import db from '../db/knex.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
 
-export async function createSession(deviceId: string, email?: string, password?: string) {
+export async function createSession(deviceId: string, email?: string, password?: string, name?: string) {
   let user;
 
   if (email) {
@@ -11,7 +11,7 @@ export async function createSession(deviceId: string, email?: string, password?:
     if (!user) {
       user = {
         id: deviceId,
-        name: email.split('@')[0],
+        name: name || email.split('@')[0],
         email: email,
         total_xp: 0,
         total_points: 0

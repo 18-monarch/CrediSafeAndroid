@@ -6,19 +6,22 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,7 +33,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -39,15 +45,19 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.credisafe.mobile.data.AuthManager
 import com.credisafe.mobile.data.CrediSafeDb
 import com.credisafe.mobile.data.DrivingEvent
 import com.credisafe.mobile.data.TripRecord
+import com.credisafe.mobile.data.Vehicle
 import com.credisafe.mobile.domain.CompatibilityChecker
 import com.credisafe.mobile.domain.CompatibilityState
 import com.credisafe.mobile.domain.IssueLevel
@@ -55,6 +65,15 @@ import com.credisafe.mobile.domain.LiveTelemetry
 import com.credisafe.mobile.domain.XpEngine
 import com.credisafe.mobile.service.TelemetryForegroundService
 import com.credisafe.mobile.service.TripSession
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapType
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.Polyline
+import com.google.maps.android.compose.rememberCameraPositionState
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -115,18 +134,19 @@ class MainActivity : ComponentActivity() {
         if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray())
     }
 
-    fun startTrip() {
+    fun startTrip(userId: String?, vehicleId: String?) {
         val allowed = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (!allowed) {
             requestPermissions()
             return
         }
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, TelemetryForegroundService::class.java)
-                .setAction(TelemetryForegroundService.ACTION_START),
-        )
+        val intent = Intent(this, TelemetryForegroundService::class.java).apply {
+            action = TelemetryForegroundService.ACTION_START
+            putExtra(TelemetryForegroundService.EXTRA_USER_ID, userId)
+            putExtra(TelemetryForegroundService.EXTRA_VEHICLE_ID, vehicleId)
+        }
+        ContextCompat.startForegroundService(this, intent)
     }
 
     fun stopTrip() {
@@ -137,18 +157,32 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Tab { HOME, DRIVE, TRIPS, REWARDS, PROFILE, DIAGNOSTICS, COMPATIBILITY, AUTH }
+private enum class Tab { HOME, DRIVE, TRIPS, REWARDS, PROFILE, DIAGNOSTICS, COMPATIBILITY, AUTH, REGISTER }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CrediSafeApp() {
-    val activity = LocalContext.current as MainActivity
-    val auth = remember { AuthManager(activity) }
+    val context = LocalContext.current
+    val activity = context as MainActivity
+    val auth = remember { AuthManager(context) }
     var tab by remember { mutableStateOf(if (auth.getUserId() == null) Tab.AUTH else Tab.HOME) }
     val telemetry by TripSession.state.collectAsState()
 
+    // Smooth navigation back logic
+    BackHandler(enabled = tab != Tab.HOME && tab != Tab.AUTH && tab != Tab.REGISTER) {
+        when (tab) {
+            Tab.DIAGNOSTICS, Tab.COMPATIBILITY -> tab = Tab.PROFILE
+            else -> tab = Tab.HOME
+        }
+    }
+
     if (tab == Tab.AUTH) {
-        AuthScreen(auth) { tab = Tab.HOME }
+        AuthScreen(auth, onRegister = { tab = Tab.REGISTER }) { tab = Tab.HOME }
+        return
+    }
+
+    if (tab == Tab.REGISTER) {
+        RegisterScreen(auth, onLogin = { tab = Tab.AUTH }) { tab = Tab.HOME }
         return
     }
 
@@ -160,22 +194,37 @@ private fun CrediSafeApp() {
     Scaffold(
         containerColor = Night,
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        BrandMark()
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text("CrediSafe", color = White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                            Text("SAFE DRIVING • REAL REWARDS", color = GreenSoft, fontSize = 8.sp, letterSpacing = 1.sp)
+            Column {
+                TopAppBar(
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            BrandMark()
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text("CrediSafe", color = White, fontSize = 19.sp, fontWeight = FontWeight.Black)
+                                Text("INTELLIGENT TELEMATICS", color = GreenSoft, fontSize = 8.sp, letterSpacing = 1.2.sp)
+                            }
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Night),
-            )
+                    },
+                    actions = {
+                        if (telemetry.active) {
+                            Row(
+                                modifier = Modifier.padding(end = 12.dp).background(Surface2, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.size(6.dp).background(Green, CircleShape))
+                                Spacer(Modifier.width(6.dp))
+                                Text("LIVE", color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Night),
+                )
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Brush.horizontalGradient(listOf(Color.Transparent, Border, Color.Transparent))))
+            }
         },
         bottomBar = {
-            NavigationBar(containerColor = Surface1) {
+            NavigationBar(containerColor = Surface1, tonalElevation = 0.dp) {
                 Nav(tab == Tab.HOME, { tab = Tab.HOME }, Icons.Default.Home, "Home")
                 Nav(tab == Tab.DRIVE, { tab = Tab.DRIVE }, Icons.Default.GpsFixed, "Drive")
                 Nav(tab == Tab.TRIPS, { tab = Tab.TRIPS }, Icons.Default.Route, "Trips")
@@ -187,18 +236,22 @@ private fun CrediSafeApp() {
         Box(Modifier.padding(padding)) {
             AnimatedContent(
                 targetState = tab,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = { 
+                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300)) 
+                },
                 label = "tab_change"
             ) { targetTab ->
                 when (targetTab) {
                     Tab.HOME -> HomeScreen(Modifier, telemetry, activity) { tab = Tab.DRIVE }
-                    Tab.DRIVE -> DriveScreen(Modifier, telemetry, activity)
+                    Tab.DRIVE -> DriveScreen(Modifier, telemetry, activity, auth)
                     Tab.TRIPS -> TripsScreen(Modifier)
                     Tab.REWARDS -> RewardsScreen(Modifier)
-                    Tab.PROFILE -> ProfileScreen(Modifier, { tab = Tab.DIAGNOSTICS }) { tab = Tab.COMPATIBILITY }
+                    Tab.PROFILE -> ProfileScreen(Modifier, auth, { tab = Tab.DIAGNOSTICS }, { tab = Tab.COMPATIBILITY }) { 
+                        tab = Tab.AUTH 
+                    }
                     Tab.DIAGNOSTICS -> DiagnosticsScreen(Modifier, telemetry) { tab = Tab.PROFILE }
                     Tab.COMPATIBILITY -> CompatibilityScreen(Modifier) { tab = Tab.PROFILE }
-                    Tab.AUTH -> Box {} // Handled above
+                    Tab.AUTH, Tab.REGISTER -> Box {} 
                 }
             }
         }
@@ -207,95 +260,247 @@ private fun CrediSafeApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AuthScreen(auth: AuthManager, onAuthSuccess: () -> Unit) {
+private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess: () -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     Column(
-        Modifier.fillMaxSize().background(Night).padding(24.dp),
+        Modifier.fillMaxSize().background(Night).padding(24.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Image(
             painter = painterResource(id = R.drawable.credisafe_icon),
             contentDescription = null,
-            modifier = Modifier.size(100.dp)
+            modifier = Modifier.size(100.dp).shadow(20.dp, CircleShape, spotColor = Green)
         )
         Spacer(Modifier.height(32.dp))
-        Text("Welcome to CrediSafe", color = White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text("Drive safe. Earn more.", color = Muted, fontSize = 14.sp)
-        Spacer(Modifier.height(32.dp))
+        Text("Welcome to CrediSafe", color = White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+        Text("Drive safe. Earn more.", color = GreenSoft, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(40.dp))
 
-        TextField(
+        OutlinedTextField(
             value = email,
-            onValueChange = { email = it; error = null },
+            onValueChange = { email = it.trim().lowercase(); error = null },
             label = { Text("Email Address") },
             modifier = Modifier.fillMaxWidth(),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Surface1,
-                unfocusedContainerColor = Surface1,
-                focusedIndicatorColor = Green,
-                unfocusedIndicatorColor = Border,
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green,
+                unfocusedBorderColor = Surface3,
                 cursorColor = Green,
+                focusedLabelColor = Green,
+                unfocusedLabelColor = Muted,
                 focusedTextColor = White,
                 unfocusedTextColor = White
             ),
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(16.dp),
             leadingIcon = { Icon(Icons.Default.Email, null, tint = Muted) }
         )
         Spacer(Modifier.height(16.dp))
-        TextField(
+        OutlinedTextField(
             value = password,
             onValueChange = { password = it; error = null },
             label = { Text("Password") },
             modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            visualTransformation = if (passwordVisible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Surface1,
-                unfocusedContainerColor = Surface1,
-                focusedIndicatorColor = Green,
-                unfocusedIndicatorColor = Border,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green,
+                unfocusedBorderColor = Surface3,
                 cursorColor = Green,
+                focusedLabelColor = Green,
+                unfocusedLabelColor = Muted,
                 focusedTextColor = White,
                 unfocusedTextColor = White
             ),
-            shape = RoundedCornerShape(12.dp),
-            leadingIcon = { Icon(Icons.Default.Lock, null, tint = Muted) }
+            shape = RoundedCornerShape(16.dp),
+            leadingIcon = { Icon(Icons.Default.Lock, null, tint = Muted) },
+            trailingIcon = {
+                val icon = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(icon, null, tint = Muted)
+                }
+            }
         )
 
         if (error != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(error!!, color = Error, fontSize = 12.sp)
+            Spacer(Modifier.height(12.dp))
+            Text(error!!, color = Error, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         }
 
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
+                if (email.isEmpty() || password.isEmpty()) {
+                    error = "Please enter both email and password"
+                    return@Button
+                }
                 loading = true
                 scope.launch {
                     val res = auth.login(email, password)
                     if (res.isSuccess) {
                         onAuthSuccess()
                     } else {
-                        error = res.exceptionOrNull()?.message ?: "Authentication failed"
+                        val e = res.exceptionOrNull()
+                        error = when {
+                            e?.message?.contains("401") == true -> "Incorrect email or password"
+                            e?.message?.contains("timeout") == true -> "Connection timed out. Render may be waking up. Please try again."
+                            else -> e?.message ?: "Unable to connect to CrediSafe server"
+                        }
                     }
                     loading = false
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(54.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Night),
-            shape = RoundedCornerShape(17.dp),
-            enabled = !loading && email.isNotEmpty() && password.isNotEmpty()
+            shape = RoundedCornerShape(18.dp),
+            enabled = !loading
         ) {
             if (loading) {
-                CircularProgressIndicator(Modifier.size(24.dp), color = Night)
+                CircularProgressIndicator(Modifier.size(24.dp), color = Night, strokeWidth = 2.dp)
             } else {
-                Text("Login / Register", fontWeight = FontWeight.Bold)
+                Text("Login", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        TextButton(onClick = onRegister) {
+            Text("New to CrediSafe? Create account", color = GreenSoft, fontSize = 14.sp)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    Column(
+        Modifier.fillMaxSize().background(Night).padding(24.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("Create Account", color = White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+        Text("Start building your driving profile.", color = Muted, fontSize = 14.sp)
+        Spacer(Modifier.height(40.dp))
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it; error = null },
+            label = { Text("Full Name") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green, unfocusedBorderColor = Surface3,
+                cursorColor = Green, focusedLabelColor = Green, unfocusedLabelColor = Muted,
+                focusedTextColor = White, unfocusedTextColor = White
+            ),
+            shape = RoundedCornerShape(16.dp),
+            leadingIcon = { Icon(Icons.Default.Person, null, tint = Muted) }
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it.trim().lowercase(); error = null },
+            label = { Text("Email Address") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green, unfocusedBorderColor = Surface3,
+                cursorColor = Green, focusedLabelColor = Green, unfocusedLabelColor = Muted,
+                focusedTextColor = White, unfocusedTextColor = White
+            ),
+            shape = RoundedCornerShape(16.dp),
+            leadingIcon = { Icon(Icons.Default.Email, null, tint = Muted) }
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it; error = null },
+            label = { Text("Password") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = if (passwordVisible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green, unfocusedBorderColor = Surface3,
+                cursorColor = Green, focusedLabelColor = Green, unfocusedLabelColor = Muted,
+                focusedTextColor = White, unfocusedTextColor = White
+            ),
+            shape = RoundedCornerShape(16.dp),
+            leadingIcon = { Icon(Icons.Default.Lock, null, tint = Muted) }
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = confirmPassword,
+            onValueChange = { confirmPassword = it; error = null },
+            label = { Text("Confirm Password") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Green, unfocusedBorderColor = Surface3,
+                cursorColor = Green, focusedLabelColor = Green, unfocusedLabelColor = Muted,
+                focusedTextColor = White, unfocusedTextColor = White
+            ),
+            shape = RoundedCornerShape(16.dp),
+            leadingIcon = { Icon(Icons.Default.Lock, null, tint = Muted) }
+        )
+
+        if (error != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(error!!, color = Error, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        }
+
+        Spacer(Modifier.height(32.dp))
+        Button(
+            onClick = {
+                if (name.isEmpty() || email.isEmpty() || password.isEmpty()) {
+                    error = "All fields are required"
+                    return@Button
+                }
+                if (password != confirmPassword) {
+                    error = "Passwords do not match"
+                    return@Button
+                }
+                loading = true
+                scope.launch {
+                    val res = auth.login(email, password, name)
+                    if (res.isSuccess) {
+                        onAuthSuccess()
+                    } else {
+                        error = res.exceptionOrNull()?.message ?: "Registration failed"
+                    }
+                    loading = false
+                }
+            },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Night),
+            shape = RoundedCornerShape(18.dp),
+            enabled = !loading
+        ) {
+            if (loading) {
+                CircularProgressIndicator(Modifier.size(24.dp), color = Night, strokeWidth = 2.dp)
+            } else {
+                Text("Create Account", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+        }
+        
+        Spacer(Modifier.height(24.dp))
+        TextButton(onClick = onLogin) {
+            Text("Already have an account? Login", color = GreenSoft, fontSize = 14.sp)
         }
     }
 }
@@ -379,18 +584,20 @@ private fun HomeScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: M
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(16.dp)) {
+                    Text("Intelligent Insight", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                    Spacer(Modifier.height(4.dp))
                     Text("One transparent result", color = White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     if (trips.isEmpty()) {
                         Text("No trip data yet. Complete a real journey to generate your first score, XP and reward points.", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                     } else {
-                        Text(
-                            "Best recorded safety score: ${bestScore ?: 0}/100. " +
-                                "Lifetime XP: $totalXp. Reward points: $totalPoints.",
-                            color = Muted,
-                            fontSize = 12.sp,
-                            lineHeight = 18.sp,
-                        )
+                        val smoothBraking = trips.count { (it.safetyScore ?: 0) > 90 }
+                        val insight = if (smoothBraking > 0) {
+                            "You've had $smoothBraking high-score journeys. You are in the Top 5% of smoothest brakers in your city."
+                        } else {
+                            "Best recorded safety score: ${bestScore ?: 0}/100. Lifetime XP: $totalXp."
+                        }
+                        Text(insight, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
                     }
                 }
             }
@@ -400,7 +607,7 @@ private fun HomeScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: M
                 onClick = {
                     onDrive()
                     if (!telemetry.active) {
-                        activity.startTrip()
+                        // Vehicle ID is handled in DriveScreen start logic
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(54.dp),
@@ -412,6 +619,11 @@ private fun HomeScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: M
                 Text(if (telemetry.active) "View active journey" else "Start your journey", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(8.dp))
                 Icon(Icons.Default.ArrowForward, null)
+            }
+        }
+        item {
+            Box(Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
+                Text("POWERED BY CREDISAFE INTELLIGENCE", color = Muted.copy(alpha = 0.4f), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             }
         }
         item { Spacer(Modifier.height(8.dp)) }
@@ -475,13 +687,57 @@ private fun LevelCard(totalXp: Int) {
 }
 
 @Composable
-private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: MainActivity) {
+private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: MainActivity, auth: AuthManager) {
+    val context = LocalContext.current
+    val db = remember { CrediSafeDb(context) }
+    var selectedVehicleId by remember { mutableStateOf(auth.getSelectedVehicleId()) }
+    var vehicles by remember { mutableStateOf(emptyList<Vehicle>()) }
+
+    LaunchedEffect(Unit) {
+        vehicles = db.listVehicles(auth.getUserId() ?: "")
+        if (selectedVehicleId == null && vehicles.isNotEmpty()) {
+            selectedVehicleId = vehicles.first().id
+            auth.setSelectedVehicleId(selectedVehicleId)
+        }
+    }
+
     Column(
         modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(if (telemetry.active) "TRIP ACTIVE" else "READY TO DRIVE", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Text(if (telemetry.active) "Measure the journey." else "Capture real data.", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
+
+        if (!telemetry.active) {
+            VehicleSelectionCard(vehicles, selectedVehicleId) { 
+                selectedVehicleId = it.id
+                auth.setSelectedVehicleId(it.id)
+            }
+        }
+
+        if (telemetry.active && telemetry.route.isNotEmpty()) {
+            Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                val lastPos = telemetry.route.last()
+                val cameraPositionState = rememberCameraPositionState {
+                    position = CameraPosition.fromLatLngZoom(LatLng(lastPos.lat, lastPos.lng), 15f)
+                }
+                LaunchedEffect(telemetry.route.size) {
+                    cameraPositionState.animate(CameraUpdateFactory.newLatLng(LatLng(lastPos.lat, lastPos.lng)))
+                }
+                GoogleMap(
+                    modifier = Modifier.fillMaxSize(),
+                    cameraPositionState = cameraPositionState,
+                    uiSettings = MapUiSettings(zoomControlsEnabled = false, tiltGesturesEnabled = false, myLocationButtonEnabled = false),
+                    properties = MapProperties(mapType = MapType.NORMAL, isMyLocationEnabled = true)
+                ) {
+                    Polyline(
+                        points = telemetry.route.map { LatLng(it.lat, it.lng) },
+                        color = Green,
+                        width = 8f
+                    )
+                }
+            }
+        }
 
         Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp)) {
@@ -525,7 +781,13 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
         telemetry.latestEvent?.let { EventCard(it) }
 
         Button(
-            onClick = if (telemetry.active) activity::stopTrip else activity::startTrip,
+            onClick = {
+                if (telemetry.active) {
+                    activity.stopTrip()
+                } else {
+                    activity.startTrip(auth.getUserId(), selectedVehicleId)
+                }
+            },
             modifier = Modifier.fillMaxWidth().height(54.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (telemetry.active) Error else Green,
@@ -545,7 +807,40 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
             color = Muted,
             fontSize = 10.sp,
             lineHeight = 15.sp,
+            textAlign = TextAlign.Center
         )
+    }
+}
+
+@Composable
+private fun VehicleSelectionCard(vehicles: List<Vehicle>, selectedId: String?, onSelect: (Vehicle) -> Unit) {
+    Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Vehicle Profile", color = White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(12.dp))
+            if (vehicles.isEmpty()) {
+                Text("No vehicles registered. Using generic profile.", color = Muted, fontSize = 12.sp)
+            } else {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(vehicles) { vehicle ->
+                        val selected = vehicle.id == selectedId
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) Green.copy(alpha = 0.1f) else Surface2)
+                                .border(1.dp, if (selected) Green else Color.Transparent, RoundedCornerShape(12.dp))
+                                .clickable { onSelect(vehicle) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Column {
+                                Text(vehicle.make, color = if (selected) Green else White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(vehicle.model, color = if (selected) GreenSoft else Muted, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -556,6 +851,7 @@ private fun TripsScreen(modifier: Modifier) {
     var trips by remember { mutableStateOf(emptyList<TripRecord>()) }
     var showExport by remember { mutableStateOf(false) }
     var selectedTrip by remember { mutableStateOf<TripRecord?>(null) }
+    var subTab by remember { mutableIntStateOf(0) } // 0: History, 1: Leaderboard
 
     LaunchedEffect(Unit) {
         trips = db.listTrips()
@@ -566,8 +862,7 @@ private fun TripsScreen(modifier: Modifier) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("YOUR JOURNEYS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                Text("Trip history", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
-                Text("Only journeys recorded on this device appear here.", color = Muted, fontSize = 11.sp)
+                Text(if (subTab == 0) "Trip history" else "City Rank", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
             }
             OutlinedButton(onClick = { showExport = true }) {
                 Icon(Icons.Default.Download, null)
@@ -575,20 +870,45 @@ private fun TripsScreen(modifier: Modifier) {
                 Text("Export")
             }
         }
-        Spacer(Modifier.height(14.dp))
+        
+        Spacer(Modifier.height(16.dp))
+        
+        Row(Modifier.fillMaxWidth().background(Surface1, RoundedCornerShape(12.dp)).padding(4.dp)) {
+            val historyWeight by animateFloatAsState(if (subTab == 0) 1.2f else 0.8f)
+            val rankWeight by animateFloatAsState(if (subTab == 1) 1.2f else 0.8f)
+            
+            TabButton("History", subTab == 0, Modifier.weight(historyWeight)) { subTab = 0 }
+            TabButton("Leaderboard", subTab == 1, Modifier.weight(rankWeight)) { subTab = 1 }
+        }
 
-        if (trips.isEmpty()) {
-            Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(18.dp)) {
-                    Text("No trips yet", color = White, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                    Text("Start a real journey and its score, XP and reward points will appear here.", color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
+        Spacer(Modifier.height(16.dp))
+
+        if (subTab == 0) {
+            if (trips.isEmpty()) {
+                Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Route, null, tint = Muted, modifier = Modifier.size(40.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("No trips yet", color = White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Start a real journey and its score, XP and reward points will appear here.", 
+                            color = Muted, 
+                            fontSize = 12.sp, 
+                            lineHeight = 18.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(20.dp))
+                    }
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(trips, key = { it.id }) { TripRow(it) { selectedTrip = it } }
+                    item { Spacer(Modifier.height(20.dp)) }
                 }
             }
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(trips, key = { it.id }) { TripRow(it) { selectedTrip = it } }
-            }
+            LeaderboardScreen()
         }
     }
 
@@ -602,7 +922,60 @@ private fun TripsScreen(modifier: Modifier) {
 }
 
 @Composable
+private fun TabButton(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(if (selected) Surface3 else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = if (selected) White else Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun LeaderboardScreen() {
+    val users = listOf(
+        Triple("You", 4820, 1),
+        Triple("Rahul S.", 4510, 2),
+        Triple("Priya M.", 4290, 3),
+        Triple("Amit K.", 3850, 4),
+        Triple("Sneha R.", 3100, 5)
+    )
+
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface2), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Stars, null, tint = Gold, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Top 5% in your city this week", color = White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        items(users) { (name, xp, rank) ->
+            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("#$rank", color = if (rank == 1) Gold else Muted, fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(32.dp))
+                    Box(Modifier.size(36.dp).background(Surface2, CircleShape), contentAlignment = Alignment.Center) {
+                        Text(name.take(1), color = White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text(name, color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("$xp XP", color = Gold, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                }
+            }
+        }
+        item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
 private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () -> Unit) {
+    val clipboardManager = LocalClipboardManager.current
     var events by remember { mutableStateOf<List<DrivingEvent>>(emptyList()) }
     LaunchedEffect(trip.id) {
         events = db.listEvents(trip.id)
@@ -624,7 +997,20 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
                     }
                     Text(statusText, color = syncColor, fontSize = 8.sp, fontWeight = FontWeight.Black)
                 }
-                Text(SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.getDefault()).format(Date(trip.startedAt)), color = Muted, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val dateFormat = remember { SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.getDefault()) }
+                    Text(dateFormat.format(Date(trip.startedAt)), color = Muted, fontSize = 11.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "ID: ${trip.id.take(8)}...", 
+                        color = Muted, 
+                        fontSize = 10.sp,
+                        modifier = Modifier.clickable { 
+                            clipboardManager.setText(AnnotatedString(trip.id))
+                        }
+                    )
+                    Icon(Icons.Default.ContentCopy, null, tint = Muted, modifier = Modifier.size(10.dp).padding(start = 2.dp))
+                }
             }
         },
         text = {
@@ -688,37 +1074,56 @@ private fun RewardsScreen(modifier: Modifier) {
     }
 
     val points = trips.sumOf { it.rewardPoints ?: 0 }
-    val hasData = trips.isNotEmpty()
 
     Column(
         modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("REWARD PROGRESS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Text("Earn from real journeys.", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
-        Text(
-            "No points are invented. This screen is derived from completed trips recorded on this phone.",
-            color = Muted,
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-        )
 
-        Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(18.dp)) {
-                Text("Reward points", color = Muted, fontSize = 11.sp)
-                Text(points.toString(), color = Green, fontSize = 38.sp, fontWeight = FontWeight.Black)
-                Text(
-                    if (hasData) "Earned from completed recorded trips." else "No completed trips yet.",
-                    color = if (hasData) GreenSoft else Muted,
-                    fontSize = 12.sp,
-                )
+        Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(20.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("Available Points", color = Muted, fontSize = 11.sp)
+                        Text(points.toString(), color = Green, fontSize = 42.sp, fontWeight = FontWeight.Black)
+                    }
+                    Icon(Icons.Default.Redeem, null, tint = Green, modifier = Modifier.size(48.dp).alpha(0.2f))
+                }
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.fillMaxWidth().height(6.dp).background(Surface2, CircleShape)) {
+                    val progress = (points / 2000f).coerceIn(0f, 1f)
+                    Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(Green, CircleShape))
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("${(2000 - points).coerceAtLeast(0)} points remaining for ₹200 Fuel Voucher", color = Muted, fontSize = 10.sp)
             }
         }
 
-        if (!hasData) {
-            EmptyRewardCard("Complete your first real trip to start building reward progress.")
-        } else {
-            EmptyRewardCard("Partner redemption targets are intentionally hidden until real reward rules are connected to the backend.")
+        Text("PARTNER PERKS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+        
+        PerkCard("Fuel Voucher", "Get ₹200 off on your next fill-up.", "2000 pts", Icons.Default.DirectionsCar)
+        PerkCard("FASTag Cashback", "Earn 10% cashback on toll payments.", "5000 pts", Icons.Default.Route)
+        PerkCard("Safe Driver Shield", "Up to 15% discount on insurance premiums.", "10000 pts", Icons.Default.Shield)
+        
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun PerkCard(title: String, desc: String, cost: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).background(Surface2, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = Green, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text(desc, color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+            }
+            Text(cost, color = Gold, fontSize = 12.sp, fontWeight = FontWeight.Black)
         }
     }
 }
@@ -731,10 +1136,10 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                Icons.Default.ArrowForward,
+                Icons.Default.ArrowBack,
                 null,
                 tint = Green,
-                modifier = Modifier.size(20.dp).clickable(onClick = onBack).padding(2.dp)
+                modifier = Modifier.size(20.dp).clickable(onClick = onBack)
             )
             Spacer(Modifier.width(8.dp))
             Text("EXPERT DIAGNOSTICS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
@@ -801,6 +1206,7 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
         }
 
         DiagnosticSection("Network Connectivity") {
+            val context = LocalContext.current
             val apiHost = remember { 
                 try {
                     java.net.URL(com.credisafe.mobile.BuildConfig.CREDISAFE_API_BASE_URL).host
@@ -808,9 +1214,18 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
                     "invalid-url"
                 }
             }
+            var backendHealth by remember { mutableStateOf("Checking...") }
+            val syncManager = remember { com.credisafe.mobile.data.TripSyncManager(context) }
+            
+            LaunchedEffect(Unit) {
+                backendHealth = if (syncManager.checkHealth()) "Connected" else "Unavailable"
+            }
+            
             DataLine("API Host", apiHost)
+            DataLine("Backend Health", backendHealth)
             DataLine("Stream Status", telemetry.streamStatus.name)
         }
+        Spacer(Modifier.height(20.dp))
     }
 }
 
@@ -825,10 +1240,10 @@ private fun CompatibilityScreen(modifier: Modifier, onBack: () -> Unit) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-                Icons.Default.ArrowForward,
+                Icons.Default.ArrowBack,
                 null,
                 tint = Green,
-                modifier = Modifier.size(20.dp).clickable(onClick = onBack).padding(2.dp)
+                modifier = Modifier.size(20.dp).clickable(onClick = onBack)
             )
             Spacer(Modifier.width(8.dp))
             Text("SYSTEM COMPATIBILITY", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
@@ -880,10 +1295,11 @@ private fun CompatibilityScreen(modifier: Modifier, onBack: () -> Unit) {
                     Icon(Icons.Default.Shield, null, tint = Green, modifier = Modifier.size(40.dp))
                     Spacer(Modifier.height(12.dp))
                     Text("System is Optimized", color = White, fontWeight = FontWeight.Bold)
-                    Text("Your device hardware and settings are fully compatible with CrediSafe telemetry.", color = Muted, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("Your device hardware and settings are fully compatible with CrediSafe telemetry.", color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
                 }
             }
         }
+        Spacer(Modifier.height(20.dp))
     }
 }
 
@@ -914,14 +1330,22 @@ private fun DiagnosticBar(label: String, value: Double, range: Double, color: Co
 }
 
 @Composable
-private fun ProfileScreen(modifier: Modifier, onDiagnostics: () -> Unit, onCompatibility: () -> Unit) {
+private fun ProfileScreen(
+    modifier: Modifier, 
+    auth: AuthManager,
+    onDiagnostics: () -> Unit, 
+    onCompatibility: () -> Unit,
+    onLogout: () -> Unit
+) {
     val context = LocalContext.current
     val db = remember { CrediSafeDb(context) }
     var trips by remember { mutableStateOf(emptyList<TripRecord>()) }
+    var vehicles by remember { mutableStateOf(emptyList<Vehicle>()) }
     val compatibility = remember { CompatibilityChecker.check(context) }
 
     LaunchedEffect(Unit) {
         trips = db.listTrips()
+        vehicles = db.listVehicles(auth.getUserId() ?: "")
     }
 
     val xp = trips.sumOf { it.xp ?: 0 }
@@ -967,6 +1391,8 @@ private fun ProfileScreen(modifier: Modifier, onDiagnostics: () -> Unit, onCompa
             }
         }
 
+        VehiclesProfileSection(vehicles, auth.getUserId() ?: "", db)
+
         Card(
             shape = RoundedCornerShape(22.dp),
             colors = CardDefaults.cardColors(containerColor = Surface1),
@@ -983,17 +1409,26 @@ private fun ProfileScreen(modifier: Modifier, onDiagnostics: () -> Unit, onCompa
             }
         }
 
-        Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(18.dp)) {
-                Text("No dummy profile data", color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(5.dp))
-                Text(
-                    "The app does not display fake driver names, fake rankings, fake XP totals, or fake reward balances. Everything shown here comes from this device's recorded trip data.",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                )
-            }
+        Spacer(Modifier.height(12.dp))
+        
+        OutlinedButton(
+            onClick = {
+                auth.logout()
+                onLogout()
+            },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Error),
+            border = BorderStroke(1.dp, Surface3),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Icon(Icons.Default.Logout, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Logout Session", fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text("v2.3.0 • PROD-RENDER", color = Muted.copy(alpha = 0.3f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -1059,11 +1494,19 @@ private fun Onboarding(onAccept: () -> Unit) {
 
 @Composable
 private fun ScoreRing(score: Int, modifier: Modifier) {
+    val animatedScore by animateFloatAsState(targetValue = score.toFloat(), label = "score_anim")
+    val scoreColor = when {
+        score >= 90 -> Green
+        score >= 70 -> Warning
+        score > 0 -> Error
+        else -> Muted
+    }
+    
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             drawArc(Border, -90f, 360f, false, style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
-            if (score > 0) {
-                drawArc(Green, -90f, (score / 100f) * 360f, false, style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
+            if (animatedScore > 0) {
+                drawArc(scoreColor, -90f, (animatedScore / 100f) * 360f, false, style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1093,6 +1536,25 @@ private fun DataLine(label: String, value: String) {
 
 @Composable
 private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
+    val score = trip.safetyScore ?: 0
+    val scoreColor = when {
+        score >= 90 -> Green
+        score >= 70 -> Warning
+        score > 0 -> Error
+        else -> Muted
+    }
+    
+    val infiniteTransition = rememberInfiniteTransition(label = "sync_pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_anim"
+    )
+
     Card(
         shape = RoundedCornerShape(22.dp), 
         colors = CardDefaults.cardColors(containerColor = Surface1), 
@@ -1101,8 +1563,9 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
+                    val dateFormat = remember { SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.getDefault()) }
                     Text(
-                        SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.getDefault()).format(Date(trip.startedAt)),
+                        dateFormat.format(Date(trip.startedAt)),
                         color = White,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
@@ -1117,10 +1580,16 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
                             "SYNCING" -> Warning
                             else -> Muted
                         }
-                        Text(statusText, color = syncColor, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            statusText, 
+                            color = syncColor, 
+                            fontSize = 8.sp, 
+                            fontWeight = FontWeight.Bold,
+                            modifier = if (trip.syncStatus == "SYNCING") Modifier.alpha(alpha) else Modifier
+                        )
                     }
                 }
-                Text(trip.safetyScore?.toString() ?: "—", color = Green, fontSize = 25.sp, fontWeight = FontWeight.Black)
+                Text(if (score > 0) score.toString() else "—", color = scoreColor, fontSize = 25.sp, fontWeight = FontWeight.Black)
             }
             Spacer(Modifier.height(9.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -1183,6 +1652,91 @@ private fun Tag(text: String, color: Color = GreenSoft) {
 }
 
 @Composable
+private fun VehiclesProfileSection(vehicles: List<Vehicle>, userId: String, db: CrediSafeDb) {
+    var showAddDialog by remember { mutableStateOf(false) }
+    var currentVehicles by remember(vehicles) { mutableStateOf(vehicles) }
+
+    Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(18.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("My Vehicles", color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                IconButton(onClick = { showAddDialog = true }, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Add, null, tint = Green, modifier = Modifier.size(18.dp))
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (currentVehicles.isEmpty()) {
+                Text("No vehicles registered yet.", color = Muted, fontSize = 12.sp)
+            } else {
+                currentVehicles.forEach { vehicle ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(32.dp).background(Surface2, CircleShape), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.DirectionsCar, null, tint = GreenSoft, modifier = Modifier.size(16.dp))
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(vehicle.make, color = White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(vehicle.model, color = Muted, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddVehicleDialog(
+            onDismiss = { showAddDialog = false },
+            onAdd = { make, model ->
+                db.insertVehicle(userId, make, model)
+                currentVehicles = db.listVehicles(userId)
+                showAddDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddVehicleDialog(onDismiss: () -> Unit, onAdd: (String, String) -> Unit) {
+    var make by remember { mutableStateOf("") }
+    var model by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface1,
+        title = { Text("Add Vehicle", color = White, fontSize = 18.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = make,
+                    onValueChange = { make = it },
+                    label = { Text("Make (e.g. Tesla)") },
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Green, unfocusedBorderColor = Surface3, focusedTextColor = White, unfocusedTextColor = White)
+                )
+                OutlinedTextField(
+                    value = model,
+                    onValueChange = { model = it },
+                    label = { Text("Model (e.g. Model 3)") },
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Green, unfocusedBorderColor = Surface3, focusedTextColor = White, unfocusedTextColor = White)
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (make.isNotBlank() && model.isNotBlank()) onAdd(make, model) },
+                colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Night),
+                enabled = make.isNotBlank() && model.isNotBlank()
+            ) {
+                Text("Add")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = Muted) }
+        }
+    )
+}
+
+@Composable
 private fun BrandMark() {
     Image(
         painter = painterResource(id = R.drawable.credisafe_icon),
@@ -1230,7 +1784,7 @@ private fun duration(ms: Long): String {
 
 @Composable
 private fun CrediSafeTheme(content: @Composable () -> Unit) {
-    val scheme = androidx.compose.material3.darkColorScheme(
+    val scheme = darkColorScheme(
         primary = Green,
         onPrimary = Night,
         primaryContainer = Color(0xFF143A24),

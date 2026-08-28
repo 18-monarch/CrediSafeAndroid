@@ -7,11 +7,16 @@ import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFact
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import retrofit2.Retrofit
 
 class AuthManager(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val client = OkHttpClient.Builder().build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
+        .build()
     
     private val api: CloudApi by lazy {
         Retrofit.Builder()
@@ -24,8 +29,10 @@ class AuthManager(context: Context) {
 
     private val repository = AuthRepository(context, api)
     
-    suspend fun login(email: String? = null, password: String? = null) = repository.login(email, password)
+    suspend fun login(email: String? = null, password: String? = null, name: String? = null) = repository.login(email, password, name)
     fun getUserId(): String? = repository.getUserId()
     fun getAuthToken(): String? = repository.getAccessToken()
+    fun setSelectedVehicleId(id: String?) = repository.setSelectedVehicleId(id)
+    fun getSelectedVehicleId(): String? = repository.getSelectedVehicleId()
     fun logout() = repository.logout()
 }

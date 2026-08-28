@@ -12,6 +12,7 @@ data class AuthRequest(
     val deviceId: String,
     val email: String? = null,
     val password: String? = null,
+    val name: String? = null,
     val clientSecret: String? = null
 )
 
@@ -103,7 +104,17 @@ data class UploadResponse(
     val engineVersion: String? = null
 )
 
+@Serializable
+data class HealthResponse(
+    val status: String,
+    val database: String,
+    val version: String
+)
+
 interface CloudApi {
+    @GET("../health") // Health is usually top-level
+    suspend fun checkHealth(): Response<HealthResponse>
+
     @POST("auth/session")
     suspend fun createSession(@Body request: AuthRequest): Response<AuthResponse>
 

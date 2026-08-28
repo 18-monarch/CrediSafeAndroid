@@ -22,6 +22,9 @@ class TripSyncManager(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
     
     private val client = OkHttpClient.Builder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .addInterceptor { chain ->
             val original = chain.request()
             val request = original.newBuilder()
@@ -39,6 +42,15 @@ class TripSyncManager(context: Context) {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(CloudApi::class.java)
+    }
+
+    suspend fun checkHealth(): Boolean {
+        return try {
+            val response = api.checkHealth()
+            response.isSuccessful && response.body()?.status == "ok"
+        } catch (e: Exception) {
+            false
+        }
     }
 
     suspend fun syncPendingTrips(): Result<Int> {

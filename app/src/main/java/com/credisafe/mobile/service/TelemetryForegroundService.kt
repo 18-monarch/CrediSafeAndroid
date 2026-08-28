@@ -33,6 +33,7 @@ import com.credisafe.mobile.domain.SafetyEngine
 import com.credisafe.mobile.domain.TelematicsConfig
 import com.credisafe.mobile.domain.TelematicsQuality
 import com.credisafe.mobile.domain.TelemetryMath
+import com.credisafe.mobile.domain.LatLngPoint
 import com.credisafe.mobile.domain.VehicleAcceleration
 import com.credisafe.mobile.domain.WorldAcceleration
 import com.credisafe.mobile.domain.XpEngine
@@ -48,7 +49,13 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.os.Build
+
 class TelemetryForegroundService : Service(), SensorEventListener {
+    private lateinit var vibrator: Vibrator
 
     private lateinit var db: CrediSafeDb
     private lateinit var sensorManager: SensorManager
@@ -101,6 +108,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     private val sensorDts = mutableListOf<Long>()
 
     private val events = mutableListOf<DrivingEvent>()
+    private val tripRoute = mutableListOf<LatLngPoint>()
     private val cooldownMs = mutableMapOf<EventType, Long>()
     private val pendingSamples = mutableListOf<SensorSample>()
 
@@ -117,6 +125,13 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         db = CrediSafeDb(this)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         locationClient = LocationServices.getFusedLocationProviderClient(this)
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
+        }
         liveStream = LiveStreamManager(this)
 
         getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -130,13 +145,17 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startTrip()
+            ACTION_START -> {
+                val userId = intent.getStringExtra(EXTRA_USER_ID)
+                val vehicleId = intent.getStringExtra(EXTRA_VEHICLE_ID)
+                startTrip(userId, vehicleId)
+            }
             ACTION_STOP -> stopTrip()
         }
         return START_NOT_STICKY
     }
 
-    private fun startTrip() {
+    private fun startTrip(userId: String? = null, vehicleId: String? = null) {
         if (tripId != null) return
 
         if (!hasLocationPermission()) {
@@ -145,7 +164,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             return
         }
 
-        tripId = db.createTrip()
+        tripId = db.createTrip(userId, vehicleId)
         startedAt = System.currentTimeMillis()
         lastLocation = null
         distanceM = 0.0
@@ -247,6 +266,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         }
 
         lastLocation = location
+        tripRoute.add(LatLngPoint(location.latitude, location.longitude))
         locationSamples++
         speedSamples++
         speedSumKmh += speedKmh
@@ -450,6 +470,13 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         )
         events += event
         db.insertEvent(event)
+        
+        // Haptic feedback for safety events
+        if (severity == EventSeverity.HIGH) {
+            vibrator.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            vibrator.vibrate(VibrationEffect.createOneShot(50, 100))
+        }
     }
 
     private fun persistMergedSample(force: Boolean = false) {
@@ -517,6 +544,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 sensorHz = sensorHz,
                 sensorJitterMs = sensorJitterMs,
                 processLatencyMs = processLatencyMs,
+                route = tripRoute.toList()
             ),
         )
 
@@ -704,6 +732,8 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     companion object {
         const val ACTION_START = "CREDSAFE_START"
         const val ACTION_STOP = "CREDSAFE_STOP"
+        const val EXTRA_USER_ID = "user_id"
+        const val EXTRA_VEHICLE_ID = "vehicle_id"
         const val CHANNEL = "credisafe"
         const val NOTIFICATION_ID = 11
     }
