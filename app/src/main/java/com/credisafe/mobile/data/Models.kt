@@ -74,7 +74,15 @@ data class TripSummary(
     val eligibilityReason: String = "",
     val telemetryQuality: Double = 0.0,
     val antiGamingFlagsJson: String = "[]",
-    val engineVersion: String = ""
+    val engineVersion: String = "",
+    val tripClassification: String = "ELIGIBLE",
+    val discardAfterMs: Long? = null,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val roadPlaceId: String? = null,
+    val roadSpeedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0,
+    val roadContextSource: String = "NONE",
 )
 
 @Serializable
@@ -97,6 +105,14 @@ data class TripRecord(
     val telemetryQuality: Double? = null,
     val antiGamingFlagsJson: String? = null,
     val engineVersion: String? = null,
+    val tripClassification: String = "ELIGIBLE",
+    val discardAfterMs: Long? = null,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val roadPlaceId: String? = null,
+    val roadSpeedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0,
+    val roadContextSource: String = "NONE",
     val syncStatus: String = "PENDING",
 ) {
     val isAuthoritative: Boolean get() = syncStatus == "SYNCED"

@@ -4,6 +4,7 @@ import { authMiddleware, AuthRequest } from '../middleware/authMiddleware.js';
 import * as tripService from '../services/tripService.js';
 import * as telemetryService from '../services/telemetryService.js';
 import db from '../db/knex.js';
+import { getRoadContext } from '../services/roadContextService.js';
 
 import { getLiveTrips, updateLiveTrip } from '../sync/liveStore.js';
 
@@ -92,6 +93,29 @@ router.get('/trips', authMiddleware, async (req: AuthRequest, res) => {
     res.json(trips);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'server_error', message: err.message } });
+  }
+});
+
+
+// Road context proxy. Google server keys never leave the backend.
+router.get('/road/context', authMiddleware, async (req: AuthRequest, res) => {
+  const latitude = Number(req.query.latitude);
+  const longitude = Number(req.query.longitude);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+      latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return res.status(400).json({
+      error: { code: 'invalid_location', message: 'Valid latitude and longitude are required' }
+    });
+  }
+
+  try {
+    const context = await getRoadContext(latitude, longitude);
+    res.json(context);
+  } catch (err: any) {
+    res.status(502).json({
+      error: { code: 'road_context_unavailable', message: 'Road context is temporarily unavailable' }
+    });
   }
 });
 

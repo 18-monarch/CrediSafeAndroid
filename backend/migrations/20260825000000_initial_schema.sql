@@ -35,10 +35,28 @@ CREATE TABLE IF NOT EXISTS trips (
     engine_version TEXT,
     xp INTEGER,
     reward_points INTEGER,
+    trip_classification TEXT NOT NULL DEFAULT 'ELIGIBLE',
+    eligibility_reason TEXT,
+    anti_gaming_flags_json TEXT NOT NULL DEFAULT '[]',
+    road_zone_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+    road_name TEXT,
+    road_place_id TEXT,
+    road_speed_limit_kmh REAL,
+    road_context_confidence REAL NOT NULL DEFAULT 0,
+    road_context_source TEXT NOT NULL DEFAULT 'NONE',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. Driving Events
+-- 4. Trip Metrics
+CREATE TABLE IF NOT EXISTS trip_metrics (
+    trip_id UUID PRIMARY KEY REFERENCES trips(id) ON DELETE CASCADE,
+    avg_speed_kmh REAL NOT NULL DEFAULT 0,
+    max_speed_kmh REAL NOT NULL DEFAULT 0,
+    gps_quality REAL NOT NULL DEFAULT 0,
+    sensor_quality REAL NOT NULL DEFAULT 0
+);
+
+-- 5. Driving Events
 CREATE TABLE IF NOT EXISTS driving_events (
     id SERIAL PRIMARY KEY,
     trip_id UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,

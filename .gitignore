@@ -63,8 +63,8 @@ coverage/
 # Safe templates may be committed
 !.env.example
 !.env.template
-**/!.env.example
-**/!.env.template
+!**/.env.example
+!**/.env.template
 
 # Private/signing credentials
 *.pem

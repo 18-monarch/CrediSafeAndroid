@@ -1,0 +1,9 @@
+# Android Studio normally writes sdk.dir automatically.
+# sdk.dir=C:\\Users\\YOUR_NAME\\AppData\\Local\\Android\\Sdk
+
+# Public Android Maps SDK key, restricted by Android application/package + SHA-1.
+GOOGLE_MAPS_API_KEY=
+
+# Optional per-machine API override.
+CREDISAFE_API_DEBUG_URL=https://credisafeandroid.onrender.com/v1/
+CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/

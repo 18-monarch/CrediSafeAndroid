@@ -28,7 +28,7 @@ class TripSyncManager(context: Context) {
         .addInterceptor { chain ->
             val original = chain.request()
             val request = original.newBuilder()
-                .header("Authorization", auth.getAuthToken() ?: "")
+                .apply { auth.getAuthToken()?.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") } }
                 .method(original.method, original.body)
                 .build()
             chain.proceed(request)
@@ -89,6 +89,14 @@ class TripSyncManager(context: Context) {
                     telemetryQuality = trip.telemetryQuality ?: 0.0,
                     antiGamingFlags = flags,
                     engineVersion = trip.engineVersion,
+                    tripClassification = trip.tripClassification,
+                    eligibilityReason = trip.eligibilityReason,
+                    roadZoneType = trip.roadZoneType,
+                    roadName = trip.roadName,
+                    roadPlaceId = trip.roadPlaceId,
+                    roadSpeedLimitKmh = trip.roadSpeedLimitKmh,
+                    roadContextConfidence = trip.roadContextConfidence,
+                    roadContextSource = trip.roadContextSource,
                     events = emptyList() // Events uploaded separately
                 )
                 
@@ -102,6 +110,9 @@ class TripSyncManager(context: Context) {
                         type = it.type.name,
                         severity = it.severity.name,
                         confidence = it.confidence,
+                        speedKmh = it.speedKmh,
+                        longitudinalAccel = it.longitudinalAccel,
+                        lateralAccel = it.lateralAccel,
                         detail = it.detail
                     )
                 }
@@ -120,7 +131,10 @@ class TripSyncManager(context: Context) {
                     val telemetryRequest = TelemetryUploadRequest(
                         tripId = trip.id,
                         sampleCount = samples.size,
-                        samplingRateHz = 50.0, // Known constant for this engine
+                        samplingRateHz = if (samples.size > 1) {
+                            val spanSeconds = (samples.last().timestampMs - samples.first().timestampMs).coerceAtLeast(1L) / 1000.0
+                            ((samples.size - 1) / spanSeconds).coerceIn(0.1, 50.0)
+                        } else 0.0,
                         firstTimestamp = samples.first().timestampMs,
                         lastTimestamp = samples.last().timestampMs,
                         compression = "GZIP",

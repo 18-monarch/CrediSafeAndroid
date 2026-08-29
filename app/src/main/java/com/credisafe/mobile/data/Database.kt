@@ -30,6 +30,7 @@ class CrediSafeDb(context: Context) :
     override fun onCreate(db: SQLiteDatabase) {
         createCoreTables(db)
         addIndexes(db)
+        addTripIntelligenceIndexes(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -55,11 +56,21 @@ class CrediSafeDb(context: Context) :
             safeAdd(db, "trips", "engine_version", "TEXT")
         }
         if (oldVersion < 6) {
-            db.execSQL("CREATE TABLE users(id TEXT PRIMARY KEY, name TEXT, email TEXT, total_xp INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0)")
-            db.execSQL("CREATE TABLE vehicles(id TEXT PRIMARY KEY, user_id TEXT NOT NULL, make TEXT, model TEXT, FOREIGN KEY(user_id) REFERENCES users(id))")
-            db.execSQL("CREATE TABLE xp_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id TEXT, category TEXT, points INTEGER, reason TEXT, engine_version TEXT, created_at INTEGER)")
+            createIdentityAndLedgerTables(db)
             safeAdd(db, "trips", "user_id", "TEXT")
             safeAdd(db, "trips", "vehicle_id", "TEXT")
+        }
+        if (oldVersion < 7) {
+            createIdentityAndLedgerTables(db)
+            safeAdd(db, "trips", "trip_classification", "TEXT NOT NULL DEFAULT 'ELIGIBLE'")
+            safeAdd(db, "trips", "discard_after_ms", "INTEGER")
+            safeAdd(db, "trips", "road_zone_type", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+            safeAdd(db, "trips", "road_name", "TEXT")
+            safeAdd(db, "trips", "road_place_id", "TEXT")
+            safeAdd(db, "trips", "road_speed_limit_kmh", "REAL")
+            safeAdd(db, "trips", "road_context_confidence", "REAL NOT NULL DEFAULT 0")
+            safeAdd(db, "trips", "road_context_source", "TEXT NOT NULL DEFAULT 'NONE'")
+            addTripIntelligenceIndexes(db)
         }
     }
 
@@ -87,7 +98,17 @@ class CrediSafeDb(context: Context) :
                 anti_gaming_flags_json TEXT NOT NULL DEFAULT '[]',
                 engine_version TEXT,
                 sync_status TEXT NOT NULL DEFAULT 'PENDING',
-                last_sync_at INTEGER
+                last_sync_at INTEGER,
+                user_id TEXT,
+                vehicle_id TEXT,
+                trip_classification TEXT NOT NULL DEFAULT 'ELIGIBLE',
+                discard_after_ms INTEGER,
+                road_zone_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+                road_name TEXT,
+                road_place_id TEXT,
+                road_speed_limit_kmh REAL,
+                road_context_confidence REAL NOT NULL DEFAULT 0,
+                road_context_source TEXT NOT NULL DEFAULT 'NONE'
             )
             """.trimIndent(),
         )
@@ -143,12 +164,32 @@ class CrediSafeDb(context: Context) :
             )
             """.trimIndent(),
         )
+
+        createIdentityAndLedgerTables(db)
+    }
+
+    private fun createIdentityAndLedgerTables(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, name TEXT, email TEXT, total_xp INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS vehicles(id TEXT PRIMARY KEY, user_id TEXT NOT NULL, make TEXT, model TEXT, FOREIGN KEY(user_id) REFERENCES users(id))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS xp_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, trip_id TEXT, category TEXT, points INTEGER, reason TEXT, engine_version TEXT, created_at INTEGER)"
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_xp_trip_category ON xp_ledger(trip_id, category)")
     }
 
     private fun addIndexes(db: SQLiteDatabase) {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_trips_started ON trips(started_at DESC)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sensor_trip_time ON sensor_samples(trip_id, timestamp_ms)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_events_trip_time ON driving_events(trip_id, timestamp_ms)")
+    }
+
+    private fun addTripIntelligenceIndexes(db: SQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_trips_classification ON trips(trip_classification)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_trips_discard_after ON trips(discard_after_ms)")
     }
 
     private fun safeAdd(db: SQLiteDatabase, table: String, column: String, type: String) {
@@ -268,6 +309,14 @@ class CrediSafeDb(context: Context) :
 
     fun finish(id: String, s: TripSummary, xpItems: List<XpItem> = emptyList()) {
         val db = writableDatabase
+        val finalStatus = when (s.tripClassification) {
+            "ELIGIBLE" -> "COMPLETED"
+            "NOISE" -> "DISCARDED_NOISE"
+            "SUSPICIOUS" -> "REVIEW"
+            else -> "INELIGIBLE"
+        }
+        val finalSyncStatus = if (s.tripClassification == "ELIGIBLE") "PENDING" else "SKIPPED"
+
         db.beginTransaction()
         try {
             db.execSQL(
@@ -275,21 +324,32 @@ class CrediSafeDb(context: Context) :
                 UPDATE trips SET
                     ended_at=?,distance_m=?,duration_ms=?,avg_speed_kmh=?,max_speed_kmh=?,
                     gps_quality=?,sensor_quality=?,safety_score=?,xp=?,reward_points=?,
-                    status='COMPLETED',xp_breakdown_json=?,eligibility_reason=?,
-                    telemetry_quality=?,anti_gaming_flags_json=?,engine_version=?
+                    status=?,sync_status=?,xp_breakdown_json=?,eligibility_reason=?,
+                    telemetry_quality=?,anti_gaming_flags_json=?,engine_version=?,
+                    trip_classification=?,discard_after_ms=?,road_zone_type=?,road_name=?,
+                    road_place_id=?,road_speed_limit_kmh=?,road_context_confidence=?,road_context_source=?
                 WHERE id=?
                 """.trimIndent(),
                 arrayOf<Any?>(
                     s.endedAt, s.distanceM, s.durationMs, s.avgSpeedKmh, s.maxSpeedKmh,
                     s.gpsQuality, s.sensorQuality, s.safetyScore, s.xp, s.rewardPoints,
-                    s.xpBreakdownJson, s.eligibilityReason, s.telemetryQuality,
-                    s.antiGamingFlagsJson, s.engineVersion, id,
+                    finalStatus, finalSyncStatus, s.xpBreakdownJson, s.eligibilityReason,
+                    s.telemetryQuality, s.antiGamingFlagsJson, s.engineVersion,
+                    s.tripClassification, s.discardAfterMs, s.roadZoneType, s.roadName,
+                    s.roadPlaceId, s.roadSpeedLimitKmh, s.roadContextConfidence, s.roadContextSource,
+                    id,
                 ),
             )
-            
-            xpItems.forEach { item ->
+
+            // Only eligible trips create progression ledger entries. The unique
+            // index protects against accidental duplicate finalization.
+            xpItems.filter { it.points != 0 }.forEach { item ->
                 db.execSQL(
-                    "INSERT INTO xp_ledger(trip_id, category, points, reason, engine_version, created_at) VALUES(?,?,?,?,?,?)",
+                    """
+                    INSERT OR IGNORE INTO xp_ledger(
+                        trip_id, category, points, reason, engine_version, created_at
+                    ) VALUES(?,?,?,?,?,?)
+                    """.trimIndent(),
                     arrayOf<Any?>(id, item.code, item.points, item.detail, s.engineVersion, System.currentTimeMillis())
                 )
             }
@@ -297,6 +357,14 @@ class CrediSafeDb(context: Context) :
         } finally {
             db.endTransaction()
         }
+    }
+
+    fun purgeExpiredDiscardedTrips(nowMs: Long = System.currentTimeMillis()): Int {
+        return writableDatabase.delete(
+            "trips",
+            "status='DISCARDED_NOISE' AND discard_after_ms IS NOT NULL AND discard_after_ms<=?",
+            arrayOf(nowMs.toString()),
+        )
     }
 
     fun updateSyncStatus(tripId: String, status: String) {
@@ -316,7 +384,7 @@ class CrediSafeDb(context: Context) :
     fun getPendingTrips(): List<TripRecord> {
         val out = mutableListOf<TripRecord>()
         readableDatabase.query(
-            "trips", null, "(sync_status='PENDING' OR sync_status='FAILED') AND status='COMPLETED'",
+            "trips", null, "(sync_status='PENDING' OR sync_status='FAILED') AND status='COMPLETED' AND trip_classification='ELIGIBLE'",
             null, null, null, "started_at ASC"
         ).use { c ->
             while (c.moveToNext()) {
@@ -347,13 +415,24 @@ class CrediSafeDb(context: Context) :
             if (hasColumn(c, "telemetry_quality") && !c.isNull(i("telemetry_quality"))) c.getDouble(i("telemetry_quality")) else null,
             getStringOrNull(c, "anti_gaming_flags_json"),
             getStringOrNull(c, "engine_version"),
+            getStringOrNull(c, "trip_classification") ?: "ELIGIBLE",
+            if (hasColumn(c, "discard_after_ms") && !c.isNull(i("discard_after_ms"))) c.getLong(i("discard_after_ms")) else null,
+            getStringOrNull(c, "road_zone_type") ?: "UNKNOWN",
+            getStringOrNull(c, "road_name"),
+            getStringOrNull(c, "road_place_id"),
+            getDoubleOrNull(c, "road_speed_limit_kmh"),
+            getDoubleOrNull(c, "road_context_confidence") ?: 0.0,
+            getStringOrNull(c, "road_context_source") ?: "NONE",
             getStringOrNull(c, "sync_status") ?: "PENDING"
         )
     }
 
     fun listTrips(): List<TripRecord> {
+        purgeExpiredDiscardedTrips()
         val out = mutableListOf<TripRecord>()
-        readableDatabase.query("trips", null, null, null, null, null, "started_at DESC", "100").use { c ->
+        readableDatabase.query(
+            "trips", null, "status<>'DISCARDED_NOISE'", null, null, null, "started_at DESC", "100"
+        ).use { c ->
             while (c.moveToNext()) {
                 out += mapTripRecord(c)
             }
@@ -468,7 +547,7 @@ class CrediSafeDb(context: Context) :
         readableDatabase.query(
             "trips",
             arrayOf("id"),
-            "status='COMPLETED' AND ended_at>=? AND ended_at<?",
+            "status='COMPLETED' AND trip_classification='ELIGIBLE' AND ended_at>=? AND ended_at<?",
             arrayOf(start.toString(), end.toString()),
             null, null, null,
         ).use { c ->
@@ -481,7 +560,7 @@ class CrediSafeDb(context: Context) :
         readableDatabase.query(
             "trips",
             arrayOf("ended_at"),
-            "status='COMPLETED' AND ended_at IS NOT NULL",
+            "status='COMPLETED' AND trip_classification='ELIGIBLE' AND ended_at IS NOT NULL",
             null, null, null, "ended_at DESC",
         ).use { c ->
             while (c.moveToNext()) {
@@ -510,7 +589,7 @@ class CrediSafeDb(context: Context) :
         readableDatabase.query(
             "trips",
             arrayOf("id"),
-            "status='COMPLETED' AND ended_at>=? AND ended_at<?",
+            "status='COMPLETED' AND trip_classification='ELIGIBLE' AND ended_at>=? AND ended_at<?",
             arrayOf(start.toString(), end.toString()),
             null,
             null,
@@ -529,7 +608,7 @@ class CrediSafeDb(context: Context) :
         readableDatabase.query(
             "trips",
             arrayOf("ended_at"),
-            "status='COMPLETED' AND ended_at IS NOT NULL",
+            "status='COMPLETED' AND trip_classification='ELIGIBLE' AND ended_at IS NOT NULL",
             null,
             null,
             null,
@@ -556,7 +635,7 @@ class CrediSafeDb(context: Context) :
 
     fun exportJson(): String {
         val root = JSONObject()
-            .put("schemaVersion", 3)
+            .put("schemaVersion", 7)
             .put("app", "CrediSafe Android Pilot")
             .put("exportedAt", System.currentTimeMillis())
         root.put("trips", table("trips"))
@@ -592,6 +671,6 @@ class CrediSafeDb(context: Context) :
 
     companion object {
         private const val DB_NAME = "credisafe.db"
-        private const val DB_VERSION = 6
+        private const val DB_VERSION = 7
     }
 }

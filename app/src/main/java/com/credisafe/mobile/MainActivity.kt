@@ -593,7 +593,7 @@ private fun HomeScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: M
                     } else {
                         val smoothBraking = trips.count { (it.safetyScore ?: 0) > 90 }
                         val insight = if (smoothBraking > 0) {
-                            "You've had $smoothBraking high-score journeys. You are in the Top 5% of smoothest brakers in your city."
+                            "You've had $smoothBraking high-score journeys. Keep building a verified safe-driving history."
                         } else {
                             "Best recorded safety score: ${bestScore ?: 0}/100. Lifetime XP: $totalXp."
                         }
@@ -773,6 +773,19 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
                 Spacer(Modifier.height(8.dp))
                 DataLine("GPS quality", "${(telemetry.gpsQuality * 100).roundToInt()}%")
                 DataLine("GPS accuracy", telemetry.gpsAccuracyM?.let { "%.0f m".format(it) } ?: "waiting")
+                DataLine(
+                    "Road zone",
+                    telemetry.roadContext.zoneType.name.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() },
+                )
+                DataLine("Road", telemetry.roadContext.roadName ?: "Resolving / unavailable")
+                DataLine(
+                    "Trusted speed limit",
+                    telemetry.roadContext.speedLimitKmh
+                        ?.takeIf { telemetry.roadContext.speedLimitTrusted }
+                        ?.let { "${it.roundToInt()} km/h" }
+                        ?: "Not verified",
+                )
+                DataLine("Road confidence", "${(telemetry.roadContext.confidence * 100).roundToInt()}%")
                 DataLine("Sensor samples", telemetry.sensorCount.toString())
                 DataLine("Location samples", telemetry.locationCount.toString())
                             }
@@ -937,39 +950,24 @@ private fun TabButton(label: String, selected: Boolean, modifier: Modifier, onCl
 
 @Composable
 private fun LeaderboardScreen() {
-    val users = listOf(
-        Triple("You", 4820, 1),
-        Triple("Rahul S.", 4510, 2),
-        Triple("Priya M.", 4290, 3),
-        Triple("Amit K.", 3850, 4),
-        Triple("Sneha R.", 3100, 5)
-    )
-
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Surface2), modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Stars, null, tint = Gold, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text("Top 5% in your city this week", color = White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
+    Card(
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Surface1),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Default.Stars, null, tint = Gold, modifier = Modifier.size(30.dp))
+            Spacer(Modifier.height(10.dp))
+            Text("Leaderboard", color = White, fontSize = 18.sp, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "No fabricated rankings. Real city/community rankings will appear only when the server provides verified driver data.",
+                color = Muted,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                textAlign = TextAlign.Center,
+            )
         }
-        items(users) { (name, xp, rank) ->
-            Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("#$rank", color = if (rank == 1) Gold else Muted, fontSize = 14.sp, fontWeight = FontWeight.Black, modifier = Modifier.width(32.dp))
-                    Box(Modifier.size(36.dp).background(Surface2, CircleShape), contentAlignment = Alignment.Center) {
-                        Text(name.take(1), color = White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Text(name, color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Text("$xp XP", color = Gold, fontSize = 14.sp, fontWeight = FontWeight.Black)
-                }
-            }
-        }
-        item { Spacer(Modifier.height(20.dp)) }
     }
 }
 
@@ -1027,6 +1025,13 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
                     DataLine("Avg Speed", "%.1f km/h".format(trip.avgSpeedKmh))
                     DataLine("Max Speed", "%.1f km/h".format(trip.maxSpeedKmh))
                     DataLine("GPS Confidence", "${(trip.gpsQuality * 100).roundToInt()}%")
+                    DataLine("Classification", trip.tripClassification)
+                    DataLine("Road zone", trip.roadZoneType.replace('_', ' '))
+                    DataLine("Road", trip.roadName ?: "Unavailable")
+                    DataLine(
+                        "Trusted speed limit",
+                        trip.roadSpeedLimitKmh?.let { "${it.roundToInt()} km/h" } ?: "Not verified",
+                    )
                 }
                 if (events.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
@@ -1571,7 +1576,16 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
                         fontWeight = FontWeight.Bold,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(trip.status, color = GreenSoft, fontSize = 9.sp)
+                        val tripStateColor = when (trip.tripClassification) {
+                            "ELIGIBLE" -> GreenSoft
+                            "SUSPICIOUS" -> Warning
+                            else -> Muted
+                        }
+                        Text(
+                            if (trip.tripClassification == "ELIGIBLE") trip.status else trip.tripClassification,
+                            color = tripStateColor,
+                            fontSize = 9.sp,
+                        )
                         Spacer(Modifier.width(6.dp))
                         val statusText = if (trip.isAuthoritative) "SERVER CONFIRMED" else trip.syncStatus
                         val syncColor = when (trip.syncStatus) {

@@ -6,6 +6,7 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 @Serializable
 data class AuthRequest(
@@ -42,6 +43,14 @@ data class TripUploadRequest(
     val telemetryQuality: Double,
     val antiGamingFlags: List<String>,
     val engineVersion: String? = null,
+    val tripClassification: String = "ELIGIBLE",
+    val eligibilityReason: String? = null,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val roadPlaceId: String? = null,
+    val roadSpeedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0,
+    val roadContextSource: String = "NONE",
     val events: List<EventUpload>
 )
 
@@ -51,6 +60,9 @@ data class EventUpload(
     val type: String,
     val severity: String,
     val confidence: Double,
+    val speedKmh: Double = 0.0,
+    val longitudinalAccel: Double = 0.0,
+    val lateralAccel: Double = 0.0,
     val detail: String?
 )
 
@@ -87,7 +99,11 @@ data class LiveTelemetryFrame(
     val eventCount: Int,
     val telemetryQuality: Double,
     val sensorHz: Double,
-    val jitterMs: Double
+    val jitterMs: Double,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val speedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0
 )
 
 @Serializable
@@ -102,6 +118,22 @@ data class UploadResponse(
     val authoritativeXp: Int? = null,
     val authoritativePoints: Int? = null,
     val engineVersion: String? = null
+)
+
+
+
+@Serializable
+data class RoadContextResponse(
+    val zoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val placeId: String? = null,
+    val jurisdiction: String? = null,
+    val speedLimitKmh: Double? = null,
+    val speedLimitTrusted: Boolean = false,
+    val confidence: Double = 0.0,
+    val source: String = "NONE",
+    val snappedLatitude: Double? = null,
+    val snappedLongitude: Double? = null,
 )
 
 @Serializable
@@ -143,6 +175,14 @@ interface CloudApi {
 
     @GET("trips")
     suspend fun listTrips(): Response<List<TripUploadRequest>>
+
+    @GET("road/context")
+    suspend fun getRoadContext(
+        @Query("latitude") latitude: Double,
+        @Query("longitude") longitude: Double,
+        @Query("speedKmh") speedKmh: Double? = null,
+        @Query("bearing") bearing: Double? = null,
+    ): Response<RoadContextResponse>
 
     @POST("sync/ack")
     suspend fun acknowledgeSync(@Body request: SyncAckRequest): Response<UploadResponse>

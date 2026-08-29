@@ -44,6 +44,7 @@ data class LiveTelemetry(
     val sensorHz: Double = 0.0,
     val sensorJitterMs: Double = 0.0,
     val processLatencyMs: Double = 0.0,
+    val roadContext: RoadContext = RoadContext(),
     val route: List<LatLngPoint> = emptyList(),
 )
 
