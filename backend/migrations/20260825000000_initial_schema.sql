@@ -5,7 +5,11 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY,
     name TEXT,
     email TEXT UNIQUE,
+    password_hash TEXT,
+    account_type TEXT NOT NULL DEFAULT 'guest',
+    email_verified_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     total_xp INTEGER DEFAULT 0,
     total_points INTEGER DEFAULT 0
 );
@@ -35,10 +39,33 @@ CREATE TABLE IF NOT EXISTS trips (
     engine_version TEXT,
     xp INTEGER,
     reward_points INTEGER,
+    trip_classification TEXT NOT NULL DEFAULT 'ELIGIBLE',
+    eligibility_reason TEXT,
+    anti_gaming_flags_json TEXT NOT NULL DEFAULT '[]',
+    road_zone_type TEXT NOT NULL DEFAULT 'UNKNOWN',
+    road_name TEXT,
+    road_place_id TEXT,
+    road_speed_limit_kmh REAL,
+    road_context_confidence REAL NOT NULL DEFAULT 0,
+    road_context_source TEXT NOT NULL DEFAULT 'NONE',
+    zone_profile_json TEXT NOT NULL DEFAULT '{}',
+    mobility_mode TEXT NOT NULL DEFAULT 'UNKNOWN',
+    mobility_confidence INTEGER NOT NULL DEFAULT 0,
+    mobility_reason TEXT,
+    road_match_ratio REAL NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 4. Driving Events
+-- 4. Trip Metrics
+CREATE TABLE IF NOT EXISTS trip_metrics (
+    trip_id UUID PRIMARY KEY REFERENCES trips(id) ON DELETE CASCADE,
+    avg_speed_kmh REAL NOT NULL DEFAULT 0,
+    max_speed_kmh REAL NOT NULL DEFAULT 0,
+    gps_quality REAL NOT NULL DEFAULT 0,
+    sensor_quality REAL NOT NULL DEFAULT 0
+);
+
+-- 5. Driving Events
 CREATE TABLE IF NOT EXISTS driving_events (
     id SERIAL PRIMARY KEY,
     trip_id UUID NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
@@ -50,7 +77,7 @@ CREATE TABLE IF NOT EXISTS driving_events (
     long_acc REAL,
     lat_acc REAL,
     detail TEXT,
-    UNIQUE(trip_id, timestamp_ms)
+    UNIQUE(trip_id, timestamp_ms, event_type)
 );
 
 -- 5. Telemetry Assets
@@ -61,6 +88,8 @@ CREATE TABLE IF NOT EXISTS telemetry_assets (
     file_size_bytes BIGINT,
     checksum_sha256 TEXT,
     compressed BOOLEAN DEFAULT TRUE,
+    compression TEXT NOT NULL DEFAULT 'GZIP',
+    payload_bytes BYTEA,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,7 +102,8 @@ CREATE TABLE IF NOT EXISTS xp_ledger (
     points INTEGER NOT NULL,
     reason TEXT,
     engine_version TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(trip_id, category)
 );
 
 -- 7. Reward Ledger
@@ -83,7 +113,8 @@ CREATE TABLE IF NOT EXISTS reward_ledger (
     trip_id UUID REFERENCES trips(id),
     points INTEGER NOT NULL,
     activity_type TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(trip_id, activity_type)
 );
 
 -- 8. Sync Audit

@@ -140,3 +140,9 @@ Desktop.ini
 *.tar
 *.tar.gz
 *.7z
+signing.properties
+.signing/
+release-output/
+
+# APK signing sidecar
+*.idsig

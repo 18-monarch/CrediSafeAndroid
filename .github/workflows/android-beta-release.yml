@@ -1,0 +1,113 @@
+name: Android Beta Distribution
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v2.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-beta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Backend typecheck
+        working-directory: backend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test:unit
+          npm audit --omit=dev
+
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "15859902"
+      - run: android sdk install --canary platforms/android-37 build-tools/36.0.0
+      - name: Static verification
+        run: python3 scripts/verify-distribution.py
+
+      - name: Validate secrets
+        shell: bash
+        run: |
+          test -n "${{ secrets.BETA_KEYSTORE_BASE64 }}" || exit 1
+          test -n "${{ secrets.BETA_STORE_PASSWORD }}" || exit 1
+          test -n "${{ secrets.BETA_KEY_ALIAS }}" || exit 1
+          test -n "${{ secrets.BETA_KEY_PASSWORD }}" || exit 1
+
+      - name: Restore beta signing
+        shell: bash
+        run: |
+          mkdir -p .signing
+          echo "${{ secrets.BETA_KEYSTORE_BASE64 }}" | base64 --decode > .signing/credisafe-beta.keystore
+          cat > signing.properties <<'EOF'
+          storeFile=.signing/credisafe-beta.keystore
+          storePassword=${{ secrets.BETA_STORE_PASSWORD }}
+          keyAlias=${{ secrets.BETA_KEY_ALIAS }}
+          keyPassword=${{ secrets.BETA_KEY_PASSWORD }}
+          EOF
+
+      - name: Configure Android build
+        shell: bash
+        run: |
+          cat > local.properties <<'EOF'
+          CREDISAFE_API_DEBUG_URL=https://credisafeandroid.onrender.com/v1/
+          CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/
+          EOF
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION_NAME="$(grep -E '^CREDISAFE_VERSION_NAME=' gradle.properties | cut -d= -f2-)"
+          test -n "$VERSION_NAME"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${VERSION_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} must equal v${VERSION_NAME}"
+            exit 1
+          fi
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build + test
+        run: |
+          chmod +x gradlew
+          ./gradlew clean test assembleRelease bundleRelease
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p release-output
+          cp app/build/outputs/apk/release/app-release.apk "release-output/CrediSafe-${{ steps.version.outputs.name }}.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "release-output/CrediSafe-${{ steps.version.outputs.name }}.aab"
+          cd release-output
+          sha256sum *.apk *.aab > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CrediSafe-${{ steps.version.outputs.name }}
+          path: release-output/*
+          retention-days: 30
+
+      - name: Publish prerelease
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release-output/* \
+            --title "CrediSafe ${GITHUB_REF_NAME}" \
+            --notes "Open Mobility beta: MapLibre/OpenFreeMap, OSM/Valhalla road context, secure authentication and server-authoritative scoring." \
+            --prerelease

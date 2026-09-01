@@ -8,6 +8,8 @@ import kotlin.math.min
 
 enum class StreamStatus { DISCONNECTED, CONNECTING, LIVE, RECONNECTING, ERROR }
 
+data class LatLngPoint(val lat: Double, val lng: Double)
+
 data class LiveTelemetry(
     val active: Boolean = false,
     val tripId: String? = null,
@@ -42,6 +44,11 @@ data class LiveTelemetry(
     val sensorHz: Double = 0.0,
     val sensorJitterMs: Double = 0.0,
     val processLatencyMs: Double = 0.0,
+    val roadContext: RoadContext = RoadContext(),
+    val mobility: MobilitySnapshot = MobilitySnapshot(),
+    val transportMode: TransportMode = TransportMode.UNKNOWN,
+    val zoneProfile: ZoneProfile = ZoneProfile(),
+    val route: List<LatLngPoint> = emptyList(),
 )
 
 data class CompatibilityState(

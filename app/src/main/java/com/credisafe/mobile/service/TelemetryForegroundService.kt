@@ -22,6 +22,8 @@ import com.credisafe.mobile.R
 import com.credisafe.mobile.data.CrediSafeDb
 import com.credisafe.mobile.data.DrivingEvent
 import com.credisafe.mobile.data.LiveStreamManager
+import com.credisafe.mobile.data.MobilityContextStore
+import com.credisafe.mobile.data.RoadContextRepository
 import com.credisafe.mobile.data.api.LiveTelemetryFrame
 import com.credisafe.mobile.data.EventSeverity
 import com.credisafe.mobile.data.EventType
@@ -33,6 +35,15 @@ import com.credisafe.mobile.domain.SafetyEngine
 import com.credisafe.mobile.domain.TelematicsConfig
 import com.credisafe.mobile.domain.TelematicsQuality
 import com.credisafe.mobile.domain.TelemetryMath
+import com.credisafe.mobile.domain.LatLngPoint
+import com.credisafe.mobile.domain.MobilityAccumulator
+import com.credisafe.mobile.domain.MobilityDecision
+import com.credisafe.mobile.domain.MobilityEngine
+import com.credisafe.mobile.domain.OverspeedLevel
+import com.credisafe.mobile.domain.RoadContext
+import com.credisafe.mobile.domain.RoadRuleEngine
+import com.credisafe.mobile.domain.TripValidityEngine
+import com.credisafe.mobile.domain.ZoneProfileAccumulator
 import com.credisafe.mobile.domain.VehicleAcceleration
 import com.credisafe.mobile.domain.WorldAcceleration
 import com.credisafe.mobile.domain.XpEngine
@@ -47,13 +58,27 @@ import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.os.Build
 
 class TelemetryForegroundService : Service(), SensorEventListener {
+    private lateinit var vibrator: Vibrator
 
     private lateinit var db: CrediSafeDb
     private lateinit var sensorManager: SensorManager
     private lateinit var locationClient: FusedLocationProviderClient
     private lateinit var liveStream: LiveStreamManager
+    private lateinit var roadContextRepository: RoadContextRepository
+    private lateinit var mobilityActivityManager: MobilityActivityManager
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var tripId: String? = null
     private var startedAt = 0L
@@ -72,6 +97,16 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     private var locationSamples = 0L
     private var suspiciousJumps = 0
     private var mockLocationCount = 0
+    private var movingLocationSamples = 0L
+
+    @Volatile private var currentRoadContext = RoadContext()
+    private var lastRoadContextLookupTs = 0L
+    private var lastRoadContextLookupLocation: Location? = null
+    @Volatile private var roadProviderSamples = 0
+    @Volatile private var roadMatchedSamples = 0
+    private val zoneAccumulator = ZoneProfileAccumulator()
+    private val mobilityAccumulator = MobilityAccumulator()
+    private var latestMobilityDecision = MobilityDecision.unknown()
 
     private var ax = Double.NaN
     private var ay = Double.NaN
@@ -101,6 +136,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     private val sensorDts = mutableListOf<Long>()
 
     private val events = mutableListOf<DrivingEvent>()
+    private val tripRoute = mutableListOf<LatLngPoint>()
     private val cooldownMs = mutableMapOf<EventType, Long>()
     private val pendingSamples = mutableListOf<SensorSample>()
 
@@ -117,7 +153,16 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         db = CrediSafeDb(this)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         locationClient = LocationServices.getFusedLocationProviderClient(this)
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(VIBRATOR_SERVICE) as Vibrator
+        }
         liveStream = LiveStreamManager(this)
+        roadContextRepository = RoadContextRepository(this)
+        mobilityActivityManager = MobilityActivityManager(this)
 
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(
@@ -130,13 +175,17 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startTrip()
+            ACTION_START -> {
+                val userId = intent.getStringExtra(EXTRA_USER_ID)
+                val vehicleId = intent.getStringExtra(EXTRA_VEHICLE_ID)
+                startTrip(userId, vehicleId)
+            }
             ACTION_STOP -> stopTrip()
         }
         return START_NOT_STICKY
     }
 
-    private fun startTrip() {
+    private fun startTrip(userId: String? = null, vehicleId: String? = null) {
         if (tripId != null) return
 
         if (!hasLocationPermission()) {
@@ -145,7 +194,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             return
         }
 
-        tripId = db.createTrip()
+        tripId = db.createTrip(userId, vehicleId)
         startedAt = System.currentTimeMillis()
         lastLocation = null
         distanceM = 0.0
@@ -158,6 +207,17 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         locationSamples = 0
         suspiciousJumps = 0
         mockLocationCount = 0
+        movingLocationSamples = 0
+        currentRoadContext = RoadContext()
+        lastRoadContextLookupTs = 0L
+        lastRoadContextLookupLocation = null
+        roadProviderSamples = 0
+        roadMatchedSamples = 0
+        latestMobilityDecision = MobilityDecision.unknown()
+        zoneAccumulator.reset()
+        mobilityAccumulator.reset()
+        MobilityContextStore.reset()
+        db.purgeExpiredDiscardedTrips()
         ax = Double.NaN
         ay = Double.NaN
         az = Double.NaN
@@ -179,8 +239,11 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         previousSensorTs = 0L
         lastPersistTs = 0L
         events.clear()
+        tripRoute.clear()
         cooldownMs.clear()
         pendingSamples.clear()
+        liveFrameSequence = 0L
+        lastLiveFrameTs = 0L
 
         ServiceCompat.startForeground(
             this,
@@ -191,6 +254,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
         TripSession.set(LiveTelemetry(active = true, tripId = tripId))
         liveStream.start(tripId!!)
+        mobilityActivityManager.start()
         startLocationUpdates()
         startSensorUpdates()
     }
@@ -223,6 +287,9 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
     private fun onLocation(location: Location) {
         val id = tripId ?: return
+        // If an existing v2.5 user grants Physical Activity after the trip
+        // starts, begin recognition automatically on the next location update.
+        mobilityActivityManager.start()
         if (LocationCompat.isMock(location)) {
             mockLocationCount++
             emit(id, EventType.TELEMETRY_ANOMALY, EventSeverity.HIGH, 1.0, 0.0, "Mock location detected.", location.time)
@@ -247,13 +314,17 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         }
 
         lastLocation = location
+        tripRoute.add(LatLngPoint(location.latitude, location.longitude))
         locationSamples++
+        if (speedKmh >= TelematicsConfig.MIN_MOVING_SPEED_KMH) movingLocationSamples++
+        mobilityAccumulator.add(MobilityContextStore.state.value, location.time)
         speedSamples++
         speedSumKmh += speedKmh
         maxSpeedKmh = max(maxSpeedKmh, speedKmh)
         gpsSamples++
         gpsQualitySum += gpsQuality(location.accuracy)
 
+        refreshRoadContext(location, speedKmh)
         detectOverspeed(id, speedKmh, location.time)
         updateTelemetry()
         persistMergedSample(force = true)
@@ -268,19 +339,70 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         else -> 0.2
     }
 
+    private fun refreshRoadContext(location: Location, speedKmh: Double) {
+        val now = System.currentTimeMillis()
+        val elapsed = if (lastRoadContextLookupTs > 0L) now - lastRoadContextLookupTs else Long.MAX_VALUE
+        val movedM = lastRoadContextLookupLocation?.distanceTo(location)?.toDouble() ?: Double.POSITIVE_INFINITY
+
+        val trustedLimitNeedsRefresh =
+            currentRoadContext.speedLimitTrusted && elapsed >= TRUSTED_LIMIT_REFRESH_MS
+        val movedEnough =
+            elapsed >= ROAD_CONTEXT_MIN_REFRESH_MS && movedM >= ROAD_CONTEXT_MIN_DISTANCE_M
+        val maxAgeReached = elapsed >= ROAD_CONTEXT_MAX_REFRESH_MS
+
+        if (!trustedLimitNeedsRefresh && !movedEnough && !maxAgeReached) return
+
+        val previousLookup = lastRoadContextLookupLocation?.let(::Location)
+        lastRoadContextLookupTs = now
+        lastRoadContextLookupLocation = Location(location)
+
+        serviceScope.launch {
+            val context = roadContextRepository.lookup(
+                latitude = location.latitude,
+                longitude = location.longitude,
+                previousLatitude = previousLookup?.latitude,
+                previousLongitude = previousLookup?.longitude,
+                accuracyM = location.accuracy.takeIf { location.hasAccuracy() }?.toDouble(),
+                speedKmh = speedKmh,
+                bearing = location.bearing.takeIf { location.hasBearing() }?.toDouble(),
+            )
+            if (context != null && tripId != null) {
+                currentRoadContext = context
+                if (context.providerAvailable) {
+                    roadProviderSamples++
+                    if (context.roadMatched) roadMatchedSamples++
+                }
+                zoneAccumulator.add(context)
+            }
+        }
+    }
+
     private fun detectOverspeed(id: String, speedKmh: Double, timestampMs: Long) {
-        val now = timestampMs
-        when {
-            speedKmh >= TelematicsConfig.MAJOR_OVERSPEED_KMH -> emit(
-                id, EventType.OVERSPEED_MAJOR, EventSeverity.HIGH, 0.97, speedKmh,
-                "80+ km/h threshold exceeded in the pilot speed profile.",
-                now,
+        val decision = RoadRuleEngine.overspeed(
+            speedKmh = speedKmh,
+            context = currentRoadContext,
+            nowMs = timestampMs,
+        )
+        when (decision.level) {
+            OverspeedLevel.MAJOR -> emit(
+                id,
+                EventType.OVERSPEED_MAJOR,
+                EventSeverity.HIGH,
+                0.97,
+                speedKmh,
+                decision.detail,
+                timestampMs,
             )
-            speedKmh >= TelematicsConfig.MINOR_OVERSPEED_KMH -> emit(
-                id, EventType.OVERSPEED_MINOR, EventSeverity.MEDIUM, 0.92, speedKmh,
-                "65+ km/h threshold exceeded in the pilot speed profile.",
-                now,
+            OverspeedLevel.MINOR -> emit(
+                id,
+                EventType.OVERSPEED_MINOR,
+                EventSeverity.MEDIUM,
+                0.92,
+                speedKmh,
+                decision.detail,
+                timestampMs,
             )
+            OverspeedLevel.NONE -> Unit
         }
     }
 
@@ -450,6 +572,13 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         )
         events += event
         db.insertEvent(event)
+        
+        // Haptic feedback for safety events
+        if (severity == EventSeverity.HIGH) {
+            vibrator.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            vibrator.vibrate(VibrationEffect.createOneShot(50, 100))
+        }
     }
 
     private fun persistMergedSample(force: Boolean = false) {
@@ -485,10 +614,25 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             suspiciousJumps.coerceAtMost(5),
         )
 
+        val liveMobility = MobilityContextStore.state.value
+            .takeIf { it.isFresh(System.currentTimeMillis()) }
+            ?: com.credisafe.mobile.domain.MobilitySnapshot()
+        val (dominantActivity, dominantConfidence) = mobilityAccumulator.dominant()
+        latestMobilityDecision = MobilityEngine.decide(
+            dominantActivity = dominantActivity,
+            activityConfidence = dominantConfidence,
+            roadProviderSamples = roadProviderSamples,
+            roadMatchedSamples = roadMatchedSamples,
+            avgSpeedKmh = if (speedSamples > 0) speedSumKmh / speedSamples else 0.0,
+            maxSpeedKmh = maxSpeedKmh,
+        )
+        val zoneProfile = zoneAccumulator.snapshot()
+
         TripSession.set(
             LiveTelemetry(
                 active = true,
                 tripId = trip,
+                streamStatus = TripSession.state.value.streamStatus,
                 elapsedMs = elapsed,
                 distanceM = distanceM,
                 speedKmh = lastLocation?.let { if (it.hasSpeed()) it.speed * 3.6 else 0.0 } ?: 0.0,
@@ -503,6 +647,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 safetyScore = score,
                 telemetryQuality = quality.overall,
                 latestEvent = events.lastOrNull(),
+                lastError = TripSession.state.value.lastError,
                 rawAx = finiteOrZero(ax),
                 rawAy = finiteOrZero(ay),
                 rawAz = finiteOrZero(az),
@@ -517,6 +662,11 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 sensorHz = sensorHz,
                 sensorJitterMs = sensorJitterMs,
                 processLatencyMs = processLatencyMs,
+                roadContext = currentRoadContext,
+                mobility = liveMobility,
+                transportMode = latestMobilityDecision.mode,
+                zoneProfile = zoneProfile,
+                route = tripRoute.toList()
             ),
         )
 
@@ -542,7 +692,14 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 eventCount = events.size,
                 telemetryQuality = quality.overall,
                 sensorHz = sensorHz,
-                jitterMs = sensorJitterMs
+                jitterMs = sensorJitterMs,
+                roadZoneType = currentRoadContext.zoneType.name,
+                roadName = currentRoadContext.roadName,
+                speedLimitKmh = currentRoadContext.speedLimitKmh.takeIf { currentRoadContext.speedLimitTrusted },
+                roadContextConfidence = currentRoadContext.confidence,
+                recognizedActivity = liveMobility.activity.name,
+                activityConfidence = liveMobility.confidence,
+                transportMode = latestMobilityDecision.mode.name
             )
             liveStream.sendFrame(frame)
             lastLiveFrameTs = now
@@ -556,6 +713,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
         locationClient.removeLocationUpdates(locationCallback)
         sensorManager.unregisterListener(this)
+        mobilityActivityManager.stop()
         flushSamples()
 
         val endedAt = System.currentTimeMillis()
@@ -568,12 +726,44 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             events.size,
             suspiciousJumps,
         )
+
         val anomalyFlags = AntiGamingAssessment(buildList {
             if (suspiciousJumps > 0) add("suspicious_gps_jump:$suspiciousJumps")
             if (mockLocationCount > 0) add("mock_location:$mockLocationCount")
             if (maxSpeedKmh > TelematicsConfig.MAX_REASONABLE_SPEED_KMH) add("impossible_speed")
-            if (telemetryQuality < 0.35) add("low_telemetry_quality")
+            if (telemetryQuality < TripValidityEngine.MIN_TELEMETRY_QUALITY) add("low_telemetry_quality")
         })
+
+        val (dominantActivity, dominantActivityConfidence) = mobilityAccumulator.dominant()
+        val averageSpeed = if (speedSamples > 0) speedSumKmh / speedSamples else 0.0
+        val mobilityDecision = MobilityEngine.decide(
+            dominantActivity = dominantActivity,
+            activityConfidence = dominantActivityConfidence,
+            roadProviderSamples = roadProviderSamples,
+            roadMatchedSamples = roadMatchedSamples,
+            avgSpeedKmh = averageSpeed,
+            maxSpeedKmh = maxSpeedKmh,
+        )
+        val roadMatchRatio = if (roadProviderSamples > 0) {
+            roadMatchedSamples.toDouble() / roadProviderSamples.toDouble()
+        } else 0.0
+        val zoneProfile = zoneAccumulator.snapshot()
+
+        val movingRatio = if (locationSamples > 0L) {
+            movingLocationSamples.toDouble() / locationSamples.toDouble()
+        } else 0.0
+
+        val validity = TripValidityEngine.assess(
+            distanceM = distanceM,
+            durationMs = elapsed,
+            gpsQuality = gpsQuality,
+            telemetryQuality = telemetryQuality,
+            movingLocationRatio = movingRatio,
+            locationSamples = locationSamples,
+            antiGamingFlags = anomalyFlags.flags,
+            mobility = mobilityDecision,
+            nowMs = endedAt,
+        )
 
         val score = SafetyEngine.score(
             events.groupingBy { it.type }.eachCount(),
@@ -583,8 +773,14 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             suspiciousJumps.coerceAtMost(5),
         )
 
-        val firstTripOfDay = !db.hasCompletedTripOnDate(endedAt)
+        val firstTripOfDay = validity.eligible && !db.hasCompletedTripOnDate(endedAt)
         val streakDays = if (firstTripOfDay) db.previousStreakDays(endedAt) + 1 else 1
+
+        val validityFlags = if (validity.eligible) {
+            anomalyFlags.flags
+        } else {
+            anomalyFlags.flags + "trip_validity:${validity.classification.name.lowercase()}"
+        }
 
         val xp = XpEngine.calculate(
             mode = com.credisafe.mobile.domain.TripMode.REAL_GPS,
@@ -595,34 +791,66 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             events = events,
             streakDays = streakDays,
             firstTripOfDay = firstTripOfDay,
-            antiGamingFlags = anomalyFlags.flags,
+            antiGamingFlags = validityFlags,
+            mobility = mobilityDecision,
+            zoneProfile = zoneProfile,
         )
+
+        val eligibilityReason = when {
+            validity.eligible -> xp.eligibilityReason
+            validity.reason.isNotBlank() -> validity.reason
+            else -> xp.eligibilityReason
+        }
+
+        val zoneProfileJson = JSONObject()
+            .put("dominantZone", zoneProfile.dominantZone.name)
+            .put("confidence", zoneProfile.confidence)
+            .put("urbanRatio", zoneProfile.urbanRatio)
+            .put("highwayRatio", zoneProfile.highwayRatio)
+            .put("residentialRatio", zoneProfile.residentialRatio)
+            .toString()
 
         val breakdownJson = JSONObject()
             .put("version", XpEngine.VERSION)
-            .put("eligible", xp.eligible)
-            .put("rewardEligible", xp.rewardEligible)
-            .put("subtotal", xp.subtotal)
-            .put("total", xp.total)
-            .put("rewardPoints", xp.rewardPoints)
-            .put("note", xp.note)
-            .put("eligibilityReason", xp.eligibilityReason)
-            .put("antiGamingFlags", JSONArray(anomalyFlags.flags))
+            .put("tripValidityVersion", TripValidityEngine.VERSION)
+            .put("classification", validity.classification.name)
+            .put("eligible", validity.eligible && xp.eligible)
+            .put("rewardEligible", validity.eligible && xp.rewardEligible)
+            .put("subtotal", if (validity.eligible) xp.subtotal else 0)
+            .put("total", if (validity.eligible) xp.total else 0)
+            .put("rewardPoints", if (validity.eligible) xp.rewardPoints else 0)
+            .put("note", if (validity.eligible) xp.note else validity.reason)
+            .put("eligibilityReason", eligibilityReason)
+            .put("antiGamingFlags", JSONArray(validityFlags))
+            .put("mobilityMode", mobilityDecision.mode.name)
+            .put("mobilityConfidence", mobilityDecision.confidence)
+            .put("mobilityReason", mobilityDecision.reason)
+            .put("roadMatchRatio", roadMatchRatio)
+            .put("roadZoneType", currentRoadContext.zoneType.name)
+            .put("roadName", currentRoadContext.roadName)
+            .put("roadSpeedLimitKmh", currentRoadContext.speedLimitKmh)
+            .put("roadContextConfidence", currentRoadContext.confidence)
+            .put("zoneProfile", JSONObject(zoneProfileJson))
             .put(
                 "items",
                 JSONArray().apply {
-                    xp.items.forEach {
-                        put(
-                            JSONObject()
-                                .put("code", it.code)
-                                .put("label", it.label)
-                                .put("points", it.points)
-                                .put("detail", it.detail)
-                        )
+                    if (validity.eligible) {
+                        xp.items.forEach {
+                            put(
+                                JSONObject()
+                                    .put("code", it.code)
+                                    .put("label", it.label)
+                                    .put("points", it.points)
+                                    .put("detail", it.detail)
+                            )
+                        }
                     }
                 },
             )
             .toString()
+
+        val finalXp = if (validity.eligible) xp.total else 0
+        val finalRewardPoints = if (validity.eligible) xp.rewardPoints else 0
 
         db.finish(
             id,
@@ -630,20 +858,33 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 endedAt = endedAt,
                 distanceM = distanceM,
                 durationMs = elapsed,
-                avgSpeedKmh = if (speedSamples > 0) speedSumKmh / speedSamples else 0.0,
+                avgSpeedKmh = averageSpeed,
                 maxSpeedKmh = maxSpeedKmh,
                 gpsQuality = gpsQuality,
                 sensorQuality = min(1.0, telemetryQuality),
                 safetyScore = score,
-                xp = xp.total,
-                rewardPoints = xp.rewardPoints,
+                xp = finalXp,
+                rewardPoints = finalRewardPoints,
                 xpBreakdownJson = breakdownJson,
-                eligibilityReason = xp.eligibilityReason,
+                eligibilityReason = eligibilityReason,
                 telemetryQuality = telemetryQuality,
-                antiGamingFlagsJson = JSONArray(anomalyFlags.flags).toString(),
+                antiGamingFlagsJson = JSONArray(validityFlags).toString(),
                 engineVersion = xp.engineVersion,
+                tripClassification = validity.classification.name,
+                discardAfterMs = validity.discardAfterMs,
+                roadZoneType = currentRoadContext.zoneType.name,
+                roadName = currentRoadContext.roadName,
+                roadPlaceId = currentRoadContext.placeId,
+                roadSpeedLimitKmh = currentRoadContext.speedLimitKmh.takeIf { currentRoadContext.speedLimitTrusted },
+                roadContextConfidence = currentRoadContext.confidence,
+                roadContextSource = currentRoadContext.source.name,
+                zoneProfileJson = zoneProfileJson,
+                mobilityMode = mobilityDecision.mode.name,
+                mobilityConfidence = mobilityDecision.confidence,
+                mobilityReason = mobilityDecision.reason,
+                roadMatchRatio = roadMatchRatio,
             ),
-            xp.items
+            if (validity.eligible) xp.items else emptyList(),
         )
 
         TripSession.update {
@@ -651,13 +892,24 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 active = false,
                 safetyScore = score,
                 telemetryQuality = telemetryQuality,
-                lastError = if (!xp.eligible) xp.eligibilityReason else null,
+                roadContext = currentRoadContext,
+                mobility = MobilityContextStore.state.value
+                    .takeIf { it.isFresh(endedAt) }
+                    ?: com.credisafe.mobile.domain.MobilitySnapshot(),
+                transportMode = mobilityDecision.mode,
+                zoneProfile = zoneProfile,
+                lastError = if (!validity.eligible) eligibilityReason else null,
             )
         }
 
         tripId = null
         liveStream.stop()
-        SyncWorker.enqueue(applicationContext)
+
+        if (validity.shouldSync) {
+            SyncWorker.enqueue(applicationContext)
+        }
+
+        db.purgeExpiredDiscardedTrips()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -695,7 +947,10 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     override fun onDestroy() {
         locationClient.removeLocationUpdates(locationCallback)
         sensorManager.unregisterListener(this)
+        mobilityActivityManager.stop()
         flushSamples()
+        liveStream.close()
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -704,7 +959,13 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     companion object {
         const val ACTION_START = "CREDSAFE_START"
         const val ACTION_STOP = "CREDSAFE_STOP"
+        const val EXTRA_USER_ID = "user_id"
+        const val EXTRA_VEHICLE_ID = "vehicle_id"
         const val CHANNEL = "credisafe"
         const val NOTIFICATION_ID = 11
+        const val TRUSTED_LIMIT_REFRESH_MS = 30_000L
+        const val ROAD_CONTEXT_MIN_REFRESH_MS = 60_000L
+        const val ROAD_CONTEXT_MAX_REFRESH_MS = 180_000L
+        const val ROAD_CONTEXT_MIN_DISTANCE_M = 1_000.0
     }
 }

@@ -1,1 +1,7 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48"><path android:fillColor="#15924C" android:pathData="M24,2C35,2 43,6 43,6L40,30C37,39 31,44 24,46C17,44 11,39 8,30L5,6C5,6 13,2 24,2Z"/><path android:fillColor="#FFFFFF" android:pathData="M16,12L24,9L32,12L31,20L24,25L17,20Z"/></vector>
+<?xml version="1.0" encoding="utf-8"?>
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/credisafe_icon"
+    android:insetLeft="18dp"
+    android:insetTop="18dp"
+    android:insetRight="18dp"
+    android:insetBottom="18dp" />

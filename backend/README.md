@@ -1,45 +1,64 @@
-# CrediSafe Backend
+# CrediSafe Backend v2.7
 
-Real REST API for CrediSafe Telematics.
-
-## Tech Stack
-- TypeScript / Node.js
-- Express
-- Knex.js
-- PostgreSQL (Neon)
+TypeScript/Express backend for authentication, trip synchronization, live telemetry, OSM/Valhalla road context, and authoritative safety/XP finalization.
 
 ## Setup
 
-1. `cd backend`
-2. `npm install`
-3. Create `.env` from `.env.example`
-4. Set `DATABASE_URL` and `JWT_SECRET`
-5. Run migrations: (Manual setup for Neon for now)
-   ```bash
-   psql $DATABASE_URL -f migrations/20260825000000_initial_schema.sql
-   ```
-
-## Development
 ```bash
+npm ci
+cp .env.example .env
+npm run typecheck
 npm run dev
 ```
 
-## E2E Test
-```bash
-# Ensure server is running at http://localhost:3000
-npx ts-node-dev tests/e2e.ts
+Required environment:
+
+```text
+DATABASE_URL=postgresql://...
+JWT_SECRET=<strong random value, at least 32 characters>
 ```
 
-## API Summary
-- `POST /v1/auth/session`: Create session/user from deviceId.
-- `POST /v1/trips`: Create/Update trip summary.
-- `POST /v1/trips/{tripId}/events`: Batch upload driving events.
-- `POST /v1/trips/{tripId}/telemetry`: Upload compressed 50Hz sensor samples.
-- `POST /v1/trips/{tripId}/complete`: Authoritative XP/Points calculation.
-- `GET /v1/trips`: List user's trips.
-- `POST /v1/sync/ack`: Acknowledge sync status.
+Optional:
 
-## Conflict Resolution
-- `tripId` (UUID) is the idempotency key.
-- Server results are authoritative and stored in `xp_ledger`.
-- Duplicate uploads return `200 OK` without creating duplicates.
+```text
+CORS_ORIGINS=https://your-dashboard.example
+VALHALLA_BASE_URL=https://valhalla1.openstreetmap.de
+VALHALLA_CLIENT_ID=CrediSafe-Open-Mobility/2.7
+VALHALLA_SPEED_LIMITS_TRUSTED=false
+```
+
+Keep `VALHALLA_SPEED_LIMITS_TRUSTED=false` unless the selected graph is verified to expose reliable posted limits. A returned but untrusted limit is informational and cannot create an overspeed event.
+
+## Database
+
+For a new database, apply all SQL migrations in filename order.
+
+For an existing deployment, apply every unapplied forward migration in filename order. Do not rerun the modified initial-schema migration against an existing database. A deployment upgrading to v2.7 may require:
+
+- 20260828000000_trip_intelligence_v2_4.sql
+- 20260829000000_mobility_intelligence_v2_6.sql
+- 20260831000000_open_mobility_v2_7.sql
+- 20260831000001_xp_progression_v2_7.sql
+
+Which migrations are required depends on which ones have already been applied to that database.
+
+## Security behavior
+
+- Passwords use bcrypt cost 12; plaintext passwords are never stored.
+- JWTs require an issuer, audience, HS256, expiry, and a 32+ character secret.
+- Auth and road endpoints are rate-limited.
+- The live dashboard and WebSocket both require bearer authentication.
+- Query-string WebSocket tokens are rejected.
+- Road coordinates are sent in authenticated POST bodies rather than URLs.
+- CORS is closed by default; configure explicit browser origins when needed.
+- Server-computed score, XP, and reward points override Android previews.
+- Compressed telemetry is size-limited, checksum-verified, timestamp-validated, and durably stored in PostgreSQL for the beta.
+
+## Quality checks
+
+```bash
+npm run typecheck
+npm run test:unit
+```
+
+The public Valhalla endpoint is intended only for fair-use beta validation. Production should self-host or contract an endpoint with operational guarantees.

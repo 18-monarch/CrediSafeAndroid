@@ -1,9 +1,10 @@
 import { Router } from 'express';
-import { createSession } from '../auth/authService.js';
+import { AuthError, createSession } from '../auth/authService.js';
 import { authMiddleware, AuthRequest } from '../middleware/authMiddleware.js';
 import * as tripService from '../services/tripService.js';
 import * as telemetryService from '../services/telemetryService.js';
 import db from '../db/knex.js';
+import { getRoadContext } from '../services/roadContextService.js';
 
 import { getLiveTrips, updateLiveTrip } from '../sync/liveStore.js';
 
@@ -12,12 +13,15 @@ const router = Router();
 // 1. Auth
 router.post('/auth/session', async (req, res) => {
   try {
-    const { deviceId, email, password } = req.body;
+    const { deviceId, email, password, name } = req.body;
     if (!deviceId) return res.status(400).json({ error: { code: 'invalid_request', message: 'deviceId is required' } });
-    const session = await createSession(deviceId as string, email as string, password as string);
+    const session = await createSession(deviceId as string, email as string, password as string, name as string);
     res.json(session);
   } catch (err: any) {
-    res.status(500).json({ error: { code: 'server_error', message: err.message } });
+    if (err instanceof AuthError) {
+      return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+    }
+    res.status(500).json({ error: { code: 'server_error', message: 'Authentication is temporarily unavailable.' } });
   }
 });
 
@@ -56,6 +60,10 @@ router.post('/trips/:tripId/events', authMiddleware, async (req: AuthRequest, re
 
 router.post('/trips/:tripId/telemetry', authMiddleware, async (req: AuthRequest, res) => {
   try {
+    const tripId = req.params.tripId as string;
+    if (!tripId || req.body?.tripId !== tripId) {
+      return res.status(400).json({ error: { code: 'trip_id_mismatch', message: 'Path and payload trip IDs must match.' } });
+    }
     const result = await telemetryService.processTelemetry(req.userId!, req.body);
     res.json(result);
   } catch (err: any) {
@@ -95,12 +103,44 @@ router.get('/trips', authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+
+// Server-side OSM/Valhalla road context. No map-provider secret enters the APK.
+router.post('/road/context', authMiddleware, async (req: AuthRequest, res) => {
+  const latitude = Number(req.body?.latitude);
+  const longitude = Number(req.body?.longitude);
+  const previousLatitude = req.body?.previousLatitude == null ? undefined : Number(req.body.previousLatitude);
+  const previousLongitude = req.body?.previousLongitude == null ? undefined : Number(req.body.previousLongitude);
+  const accuracyM = req.body?.accuracyM == null ? undefined : Number(req.body.accuracyM);
+
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+      latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    return res.status(400).json({
+      error: { code: 'invalid_location', message: 'Valid latitude and longitude are required' }
+    });
+  }
+
+  try {
+    const context = await getRoadContext({
+      latitude,
+      longitude,
+      previousLatitude: typeof previousLatitude === 'number' && Number.isFinite(previousLatitude) ? previousLatitude : undefined,
+      previousLongitude: typeof previousLongitude === 'number' && Number.isFinite(previousLongitude) ? previousLongitude : undefined,
+      accuracyM: typeof accuracyM === 'number' && Number.isFinite(accuracyM) ? accuracyM : undefined,
+    });
+    res.json(context);
+  } catch {
+    res.status(502).json({
+      error: { code: 'road_context_unavailable', message: 'Road context is temporarily unavailable' }
+    });
+  }
+});
+
 router.post('/sync/ack', authMiddleware, async (req: AuthRequest, res) => {
   res.json({ success: true });
 });
 
 // 3. Live Dashboard (Internal/Partner)
-router.get('/live/dashboard', async (req, res) => {
+router.get('/live/dashboard', authMiddleware, async (req, res) => {
   try {
     const trips = getLiveTrips();
     res.json(trips);

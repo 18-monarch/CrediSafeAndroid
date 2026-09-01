@@ -12,11 +12,7 @@ enum class EventType {
     TELEMETRY_ANOMALY
 }
 
-enum class EventSeverity {
-    LOW,
-    MEDIUM,
-    HIGH
-}
+enum class EventSeverity { LOW, MEDIUM, HIGH }
 
 data class DrivingEvent(
     val tripId: String,
@@ -74,7 +70,20 @@ data class TripSummary(
     val eligibilityReason: String = "",
     val telemetryQuality: Double = 0.0,
     val antiGamingFlagsJson: String = "[]",
-    val engineVersion: String = ""
+    val engineVersion: String = "",
+    val tripClassification: String = "ELIGIBLE",
+    val discardAfterMs: Long? = null,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val roadPlaceId: String? = null,
+    val roadSpeedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0,
+    val roadContextSource: String = "NONE",
+    val zoneProfileJson: String = "{}",
+    val mobilityMode: String = "UNKNOWN",
+    val mobilityConfidence: Int = 0,
+    val mobilityReason: String = "",
+    val roadMatchRatio: Double = 0.0,
 )
 
 @Serializable
@@ -97,6 +106,19 @@ data class TripRecord(
     val telemetryQuality: Double? = null,
     val antiGamingFlagsJson: String? = null,
     val engineVersion: String? = null,
+    val tripClassification: String = "ELIGIBLE",
+    val discardAfterMs: Long? = null,
+    val roadZoneType: String = "UNKNOWN",
+    val roadName: String? = null,
+    val roadPlaceId: String? = null,
+    val roadSpeedLimitKmh: Double? = null,
+    val roadContextConfidence: Double = 0.0,
+    val roadContextSource: String = "NONE",
+    val zoneProfileJson: String? = null,
+    val mobilityMode: String = "UNKNOWN",
+    val mobilityConfidence: Int = 0,
+    val mobilityReason: String? = null,
+    val roadMatchRatio: Double = 0.0,
     val syncStatus: String = "PENDING",
 ) {
     val isAuthoritative: Boolean get() = syncStatus == "SYNCED"

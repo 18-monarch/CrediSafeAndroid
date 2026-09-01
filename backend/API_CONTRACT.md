@@ -1,117 +1,51 @@
-# CrediSafe API Contract v1
+# CrediSafe API Contract — v2.7
 
-## Base URL
-The base URL is configurable via environment variables.
+Base URL: `https://credisafeandroid.onrender.com/v1/`. All protected calls use `Authorization: Bearer <JWT>`.
 
-## Error Structure
-All errors follow this structure:
-```json
-{
-  "error": {
-    "code": "string",
-    "message": "string",
-    "requestId": "uuid"
-  }
-}
-```
+## Health
 
-## Endpoints
+`GET /health` returns API/database status and version `2.7.0`.
 
-### 1. Health Check
-`GET /health`
-- **Auth**: None
-- **Response**: `200 OK`
-```json
-{
-  "status": "ok",
-  "database": "ok",
-  "version": "1.0.0"
-}
-```
+## Session
 
-### 2. Create Session
 `POST /v1/auth/session`
-- **Auth**: None (or optional Client Secret)
-- **Request Body**:
-```json
-{
-  "deviceId": "uuid",
-  "clientSecret": "string (optional)"
-}
-```
-- **Response**: `200 OK`
-```json
-{
-  "accessToken": "jwt",
-  "expiresIn": 3600,
-  "userId": "uuid"
-}
-```
 
-### 3. Create Trip
-`POST /v1/trips`
-- **Auth**: Required (Bearer Token)
-- **Request Body**: `TripUploadRequest`
-- **Response**: `201 Created` / `200 OK` (if already exists)
-```json
-{
-  "success": true,
-  "message": "Trip created"
-}
+- Guest: `{ "deviceId": "uuid" }`
+- Register/secure account: `{ "deviceId": "uuid", "name": "...", "email": "...", "password": "8-72 chars" }`
+- Login: `{ "deviceId": "uuid", "email": "...", "password": "..." }`
+
+Invalid credentials return `401 invalid_credentials`. A legacy beta account that must be secured on its original device returns `409 password_setup_required`.
+
+## Trips
+
+- `POST /v1/trips` — idempotent create/update by client-generated `tripId`.
+- `POST /v1/trips/{tripId}/events` — unique by trip, timestamp, and event type.
+- `POST /v1/trips/{tripId}/telemetry` — compressed telemetry plus checksum metadata.
+- `POST /v1/trips/{tripId}/complete` — transactional server finalization.
+- `GET /v1/trips` and `GET /v1/trips/{tripId}` — authenticated owner-only reads.
+
+Completion returns authoritative XP, reward points, safety score, eligibility, and engine version. Repeating completion returns the already-finalized values without duplicating ledgers.
+
+## Road context
+
+`POST /v1/road/context` JSON fields (POST keeps precise coordinates out of normal URL logs):
+
+```text
+latitude, longitude                     required
+previousLatitude, previousLongitude     required for confirmed segment matching
+accuracyM, speedKmh, bearing             optional
 ```
 
-### 4. Upload Events
-`POST /v1/trips/{tripId}/events`
-- **Auth**: Required (Bearer Token)
-- **Path Param**: `tripId`
-- **Request Body**: `List<EventUpload>`
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "message": "Events uploaded"
-}
-```
+The backend sends the GPS segment to Valhalla `trace_attributes` and returns normalized road class, name, OSM way identifier, snapped point, confidence, and speed-limit evidence where available.
 
-### 5. Upload Telemetry
-`POST /v1/trips/{tripId}/telemetry`
-- **Auth**: Required (Bearer Token)
-- **Path Param**: `tripId`
-- **Request Body**: `TelemetryUploadRequest`
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "message": "Telemetry uploaded and verified"
-}
-```
+Example source values are `VALHALLA_OSM`, `VALHALLA_OSM_SPEED_LIMIT`, and `NONE`. If no fresh trusted limit exists, Android applies no overspeed penalty.
 
-### 6. Complete Trip
-`POST /v1/trips/{tripId}/complete`
-- **Auth**: Required (Bearer Token)
-- **Path Param**: `tripId`
-- **Response**: `200 OK`
-```json
-{
-  "success": true,
-  "authoritativeXp": 184,
-  "authoritativePoints": 92,
-  "engineVersion": "2.1"
-}
-```
+## Live telemetry
 
-### 7. Get Trip Details
-`GET /v1/trips/{tripId}`
-- **Auth**: Required (Bearer Token)
-- **Response**: `200 OK` (`TripUploadRequest`)
+- HTTP fallback: `POST /v1/live/trips/{tripId}/frames`
+- WebSocket: `/v1/live/trips/{tripId}`
+- Dashboard: `GET /v1/live/dashboard`
 
-### 8. List Trips
-`GET /v1/trips`
-- **Auth**: Required (Bearer Token)
-- **Response**: `200 OK` (`List<TripUploadRequest>`)
+All require bearer authentication. Query-string tokens are not accepted.
 
-### 9. Sync Acknowledgement
-`POST /v1/sync/ack`
-- **Auth**: Required (Bearer Token)
-- **Request Body**: `SyncAckRequest`
-- **Response**: `200 OK`
+Errors use `{ "error": { "code": "...", "message": "..." } }`.

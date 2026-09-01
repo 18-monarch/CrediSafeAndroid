@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -15,9 +17,20 @@ const app = express();
 const port = process.env.PORT || 3000;
 const server = createServer(app);
 
-app.use(cors());
+app.disable('x-powered-by');
+app.use(helmet());
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(value => value.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins.length > 0 ? allowedOrigins : false,
+  methods: ['GET', 'POST'],
+}));
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '3mb' }));
+app.use('/v1/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false }));
+app.use('/v1/road', rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false }));
 
 app.get('/health', async (req, res) => {
   try {
@@ -25,13 +38,13 @@ app.get('/health', async (req, res) => {
     res.json({
       status: 'ok',
       database: 'ok',
-      version: '1.0.0'
+      version: '2.7.0'
     });
   } catch (err) {
     res.status(503).json({
       status: 'ok',
       database: 'down',
-      version: '1.0.0'
+      version: '2.7.0'
     });
   }
 });
@@ -46,7 +59,7 @@ server.on('upgrade', (request, socket, head) => {
   if (url.pathname.startsWith('/v1/live/trips/')) {
     const tripId = url.pathname.split('/').pop();
     const authHeader = request.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : url.searchParams.get('token');
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
 
     if (!token) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');

@@ -22,10 +22,10 @@ class AuthRepository(context: Context, private val api: CloudApi) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
-    suspend fun login(email: String? = null, password: String? = null): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun login(email: String? = null, password: String? = null, name: String? = null): Result<String> = withContext(Dispatchers.IO) {
         try {
             val deviceId = getDeviceId()
-            val response = api.createSession(AuthRequest(deviceId, email, password))
+            val response = api.createSession(AuthRequest(deviceId, email, password, name))
             if (response.isSuccessful) {
                 val body = response.body()
                 if (body != null) {
@@ -66,6 +66,12 @@ class AuthRepository(context: Context, private val api: CloudApi) {
     }
 
     fun getUserId(): String? = prefs.getString("user_id", null)
+
+    fun setSelectedVehicleId(id: String?) {
+        prefs.edit().putString("selected_vehicle_id", id).apply()
+    }
+
+    fun getSelectedVehicleId(): String? = prefs.getString("selected_vehicle_id", null)
 
     fun logout() {
         prefs.edit().remove("access_token").remove("token_expires_at").remove("user_id").apply()
