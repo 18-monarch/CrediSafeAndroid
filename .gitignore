@@ -63,8 +63,8 @@ coverage/
 # Safe templates may be committed
 !.env.example
 !.env.template
-!**/.env.example
-!**/.env.template
+**/!.env.example
+**/!.env.template
 
 # Private/signing credentials
 *.pem
@@ -140,3 +140,9 @@ Desktop.ini
 *.tar
 *.tar.gz
 *.7z
+signing.properties
+.signing/
+release-output/
+
+# APK signing sidecar
+*.idsig

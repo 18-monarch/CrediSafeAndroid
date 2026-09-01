@@ -1,91 +1,90 @@
-# CrediSafe Android v2.4 — Trip Intelligence
+# CrediSafe Android v2.7 — Open Mobility Beta
 
-CrediSafe is a native Android telematics client that records real GNSS + IMU data locally, validates whether a recording is a meaningful driving trip, calculates explainable safety/XP results, and synchronizes eligible journeys with the CrediSafe backend.
+CrediSafe is a native Android telematics beta for recording journeys, rejecting non-driving activity, estimating driving safety, and synchronizing server-authoritative XP.
 
-## v2.4 upgrade
+## What v2.7 changes
 
-### Trip validity
-Every recording is finalized as one of:
+- Replaces Google Maps Platform with MapLibre Native and the OpenFreeMap Liberty style.
+- Uses OpenStreetMap-derived Valhalla map matching through the CrediSafe backend.
+- Requires no Google Maps key, billing account, or Maps SDK.
+- Keeps Google Play services only for fused location and Activity Recognition.
+- Hashes passwords with bcrypt and verifies them on login.
+- Strengthens JWT validation, rate limiting, HTTP headers, CORS, and live-dashboard access.
+- Keeps overspeed penalties disabled unless a fresh, concrete speed limit is explicitly trusted.
+- Keeps server safety/XP results authoritative and ledger writes idempotent.
 
-- `ELIGIBLE` — meaningful trip; safety/XP/rewards are calculated and it is queued for cloud sync.
-- `NOISE` — accidental/tiny/stationary recording; zero XP/rewards, hidden from normal history, marked `SKIPPED`, and automatically purged after a short diagnostic retention window.
-- `INVALID` — meaningful recording that fails minimum distance/duration/GPS/telemetry quality; retained for explanation but does not affect XP, rewards, streak, or sync.
-- `SUSPICIOUS` — integrity/anomaly flags such as mock location or implausible GPS movement; retained for review and never rewarded.
-
-The validity rules live in `domain/TripValidityEngine.kt` so pilot calibration does not require rewriting the telemetry service.
-
-### Context-aware road rules
-CrediSafe no longer assumes a universal 60 km/h legal limit.
-
-`RoadContextEngine`/`RoadRuleEngine` uses road context returned by the CrediSafe backend. Overspeed events are created only when the app has a **fresh, trusted speed limit** with sufficient confidence. If a trusted limit is unavailable, CrediSafe does not invent a limit and does not penalize the driver.
-
-Possible road zones:
-`URBAN`, `RESIDENTIAL`, `ARTERIAL`, `HIGHWAY`, `EXPRESSWAY`, `SERVICE_ROAD`, `UNKNOWN`.
-
-### Google Maps integration
-The existing Maps Compose trip map is preserved and now uses a secure manifest placeholder rather than a hard-coded key.
-
-Put this in `local.properties`:
-
-```properties
-GOOGLE_MAPS_API_KEY=YOUR_ANDROID_RESTRICTED_MAPS_KEY
-CREDISAFE_API_DEBUG_URL=https://credisafeandroid.onrender.com/v1/
-CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/
-```
-
-Do not commit `local.properties`.
-
-For server-side road matching, configure Render/backend environment variables:
+## Architecture
 
 ```text
-GOOGLE_MAPS_SERVER_API_KEY=...
-GOOGLE_ROADS_SPEED_LIMITS_ENABLED=false
+Android GNSS + IMU + Activity Recognition
+        |
+        +--> local SQLite + immediate safety preview
+        +--> MapLibre + OpenFreeMap visual map
+        +--> CrediSafe API
+                 |
+                 +--> Valhalla / OpenStreetMap road matching
+                 +--> trip validation + anti-gaming checks
+                 +--> server safety + XP authority
+                 +--> Neon PostgreSQL
 ```
 
-Enable `GOOGLE_ROADS_SPEED_LIMITS_ENABLED=true` only when the Google Maps Platform project has the required Speed Limits entitlement. Without it, CrediSafe still obtains snapped-road/address context when configured, but treats legal speed limit as unavailable.
+Map tiles never decide safety or XP. A tile outage cannot invalidate a trip. Road matching is a separate backend signal and safely degrades to unknown.
 
-## Data pipeline
+## Android identity
 
 ```text
-START TRIP
-  -> GNSS + accelerometer + gyroscope + linear acceleration + rotation vector
-  -> local SQLite
-  -> road context (periodic, backend-proxied)
-  -> local safety/event processing
-STOP TRIP
-  -> TripValidityEngine
-  -> eligible? safety + XP + rewards + streak
-  -> atomic local finalization
-  -> WorkManager sync only for eligible trips
-  -> server authoritative result
+Package: com.credisafe.mobile
+Version: 2.7.0-beta.1
+Version code: 25
+Minimum Android: Android 8.0 / API 26
+Default API: https://credisafeandroid.onrender.com/v1/
 ```
 
-## Privacy/security boundaries
+Reuse the same beta signing key used for v2.5/v2.6 so existing installations can update without uninstalling.
 
-- Android never receives Neon/PostgreSQL credentials.
-- Server-side Google Roads/Geocoding key stays on the backend.
-- Android Maps SDK key should be restricted to the Android application package/signing certificate.
-- Raw telemetry remains local-first and is compressed for final sync.
-- No fabricated road speed limit is used for scoring.
+## Quick start
 
-## Build
+1. Copy `local.properties.example` to `local.properties` and keep Android Studio's `sdk.dir` line.
+2. Restore the existing local `signing.properties` and `.signing/credisafe-beta.keystore` files.
+3. Run:
+
+```powershell
+python .\scripts\verify-distribution.py
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\build-beta.ps1"
+```
+
+No map API key is required. Build output is written to `release-output/`.
+
+## Backend setup
+
+From `backend/`:
 
 ```bash
-./gradlew clean test assembleDebug
+npm ci
+npm run typecheck
 ```
 
-The project requires JDK 17 and Android SDK matching `compileSdk = 37`.
+Create `.env` from `.env.example`. Set a strong random `JWT_SECRET` of at least 32 characters and the Neon `DATABASE_URL`.
 
-## Backend
-
-The `backend/` folder contains the Render/Neon API. Apply migrations in order, including:
+Apply migrations in filename order, including:
 
 ```text
-backend/migrations/20260828000000_trip_intelligence_v2_4.sql
+20260829000000_mobility_intelligence_v2_6.sql
+20260831000000_open_mobility_v2_7.sql
 ```
 
-Then configure Render environment variables from `backend/.env.example`.
+The public Valhalla endpoint is a fair-use beta default. Set `VALHALLA_BASE_URL` to a CrediSafe-controlled Valhalla deployment before production scale.
 
-## Important pilot limitation
+## Honest system limits
 
-Road context and speed-limit data are reference inputs, not substitutes for posted road signs or local traffic law. CrediSafe must not present map-provider data as guaranteed legal truth.
+- Activity Recognition cannot reliably distinguish private car from bus.
+- Possible rail/transit is conservative and never inferred from provider downtime alone.
+- OpenStreetMap speed-limit coverage varies. Unknown or untrusted limits never create penalties.
+- OpenFreeMap's public service has no SLA; production can switch to a self-hosted style/tiles without rewriting the app.
+- The current score is a versioned beta model, not an insurance-certified risk score.
+
+## Acceptance tests
+
+Test a normal drive, accidental short trip, walk, bicycle if practical, screen-off/background journey, offline recording, map/road-provider outage, sync retry, password failure, duplicate completion, and install-over-update from the previous signed beta.
+
+See `START_HERE_V2_7.md`, `docs/OPEN_MOBILITY_V2_7.md`, and `docs/SECURITY_V2_7.md`.

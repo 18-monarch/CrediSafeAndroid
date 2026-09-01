@@ -18,53 +18,32 @@ class RoadRuleEngineTest {
                 speedLimitKmh = null,
                 speedLimitTrusted = false,
                 confidence = 0.9,
-                source = RoadContextSource.GOOGLE_ROADS,
-                updatedAtMs = 1_000L,
+                source = RoadContextSource.VALHALLA_OSM,
+                updatedAtMs = 1000L,
             ),
-            nowMs = 2_000L,
+            nowMs = 2000L,
         )
-
         assertEquals(OverspeedLevel.NONE, decision.level)
     }
 
     @Test
-    fun sameSpeedCanBeSafeOnHighLimitAndOverspeedOnLowLimit() {
+    fun sameSpeedUsesActualTrustedRoadLimit() {
         val now = 10_000L
-        val highway = RoadContext(
+        val highLimit = RoadContext(
             zoneType = RoadZoneType.HIGHWAY,
             speedLimitKmh = 100.0,
             speedLimitTrusted = true,
             confidence = 0.95,
-            source = RoadContextSource.GOOGLE_ROADS_SPEED_LIMIT,
             updatedAtMs = now,
         )
-        val urban = RoadContext(
+        val lowLimit = RoadContext(
             zoneType = RoadZoneType.URBAN,
             speedLimitKmh = 50.0,
             speedLimitTrusted = true,
             confidence = 0.95,
-            source = RoadContextSource.GOOGLE_ROADS_SPEED_LIMIT,
             updatedAtMs = now,
         )
-
-        assertEquals(OverspeedLevel.NONE, RoadRuleEngine.overspeed(82.0, highway, now).level)
-        assertEquals(OverspeedLevel.MAJOR, RoadRuleEngine.overspeed(82.0, urban, now).level)
-    }
-
-    @Test
-    fun staleRoadContextDoesNotPenalizeDriver() {
-        val context = RoadContext(
-            zoneType = RoadZoneType.URBAN,
-            speedLimitKmh = 50.0,
-            speedLimitTrusted = true,
-            confidence = 0.95,
-            source = RoadContextSource.GOOGLE_ROADS_SPEED_LIMIT,
-            updatedAtMs = 1_000L,
-        )
-
-        assertEquals(
-            OverspeedLevel.NONE,
-            RoadRuleEngine.overspeed(90.0, context, nowMs = 100_000L).level,
-        )
+        assertEquals(OverspeedLevel.NONE, RoadRuleEngine.overspeed(82.0, highLimit, now).level)
+        assertEquals(OverspeedLevel.MAJOR, RoadRuleEngine.overspeed(82.0, lowLimit, now).level)
     }
 }

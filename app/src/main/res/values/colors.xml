@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#F7FAFC</color>
+    <color name="credisafe_icon_background">#F7FAFC</color>
+    <color name="credisafe_navy">#071426</color>
+    <color name="credisafe_emerald">#0BA66B</color>
+    <color name="credisafe_gold">#D8A12E</color>
+    <color name="credisafe_light_surface">#F7FAFC</color>
+    <color name="credisafe_dark_background">#050B18</color>
+    <color name="credisafe_green">#0BA66B</color>
+</resources>

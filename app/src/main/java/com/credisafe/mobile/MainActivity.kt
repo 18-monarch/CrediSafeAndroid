@@ -65,15 +65,6 @@ import com.credisafe.mobile.domain.LiveTelemetry
 import com.credisafe.mobile.domain.XpEngine
 import com.credisafe.mobile.service.TelemetryForegroundService
 import com.credisafe.mobile.service.TripSession
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapType
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -126,6 +117,11 @@ class MainActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             permissions += Manifest.permission.ACCESS_COARSE_LOCATION
         }
+        if (android.os.Build.VERSION.SDK_INT >= 29 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissions += Manifest.permission.ACTIVITY_RECOGNITION
+        }
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -141,6 +137,16 @@ class MainActivity : ComponentActivity() {
             requestPermissions()
             return
         }
+
+        // Mobility permission was added after the original pilot onboarding. Existing
+        // users are prompted at trip start if they have not granted it yet;
+        // recording can still continue in degraded mode if they decline.
+        if (android.os.Build.VERSION.SDK_INT >= 29 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions()
+        }
+
         val intent = Intent(this, TelemetryForegroundService::class.java).apply {
             action = TelemetryForegroundService.ACTION_START
             putExtra(TelemetryForegroundService.EXTRA_USER_ID, userId)
@@ -236,22 +242,22 @@ private fun CrediSafeApp() {
         Box(Modifier.padding(padding)) {
             AnimatedContent(
                 targetState = tab,
-                transitionSpec = { 
-                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300)) 
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
                 },
                 label = "tab_change"
             ) { targetTab ->
                 when (targetTab) {
                     Tab.HOME -> HomeScreen(Modifier, telemetry, activity) { tab = Tab.DRIVE }
                     Tab.DRIVE -> DriveScreen(Modifier, telemetry, activity, auth)
-                    Tab.TRIPS -> TripsScreen(Modifier)
-                    Tab.REWARDS -> RewardsScreen(Modifier)
-                    Tab.PROFILE -> ProfileScreen(Modifier, auth, { tab = Tab.DIAGNOSTICS }, { tab = Tab.COMPATIBILITY }) { 
-                        tab = Tab.AUTH 
+                    Tab.TRIPS -> TripsScreen(Modifier, telemetry)
+                    Tab.REWARDS -> RewardsScreen(Modifier, telemetry)
+                    Tab.PROFILE -> ProfileScreen(Modifier, telemetry, auth, { tab = Tab.DIAGNOSTICS }, { tab = Tab.COMPATIBILITY }) {
+                        tab = Tab.AUTH
                     }
                     Tab.DIAGNOSTICS -> DiagnosticsScreen(Modifier, telemetry) { tab = Tab.PROFILE }
                     Tab.COMPATIBILITY -> CompatibilityScreen(Modifier) { tab = Tab.PROFILE }
-                    Tab.AUTH, Tab.REGISTER -> Box {} 
+                    Tab.AUTH, Tab.REGISTER -> Box {}
                 }
             }
         }
@@ -368,7 +374,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
                 Text("Login", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
         }
-        
+
         Spacer(Modifier.height(24.dp))
         TextButton(onClick = onRegister) {
             Text("New to CrediSafe? Create account", color = GreenSoft, fontSize = 14.sp)
@@ -497,7 +503,7 @@ private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess
                 Text("Create Account", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
         }
-        
+
         Spacer(Modifier.height(24.dp))
         TextButton(onClick = onLogin) {
             Text("Already have an account? Login", color = GreenSoft, fontSize = 14.sp)
@@ -540,7 +546,7 @@ private fun HomeScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: M
     val db = remember { CrediSafeDb(activity) }
     var trips by remember { mutableStateOf(emptyList<TripRecord>()) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(telemetry.active) {
         trips = db.listTrips()
     }
 
@@ -709,7 +715,7 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
         Text(if (telemetry.active) "Measure the journey." else "Capture real data.", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
 
         if (!telemetry.active) {
-            VehicleSelectionCard(vehicles, selectedVehicleId) { 
+            VehicleSelectionCard(vehicles, selectedVehicleId) {
                 selectedVehicleId = it.id
                 auth.setSelectedVehicleId(it.id)
             }
@@ -717,25 +723,10 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
 
         if (telemetry.active && telemetry.route.isNotEmpty()) {
             Card(shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth().height(200.dp)) {
-                val lastPos = telemetry.route.last()
-                val cameraPositionState = rememberCameraPositionState {
-                    position = CameraPosition.fromLatLngZoom(LatLng(lastPos.lat, lastPos.lng), 15f)
-                }
-                LaunchedEffect(telemetry.route.size) {
-                    cameraPositionState.animate(CameraUpdateFactory.newLatLng(LatLng(lastPos.lat, lastPos.lng)))
-                }
-                GoogleMap(
+                OpenMobilityMap(
+                    route = telemetry.route,
                     modifier = Modifier.fillMaxSize(),
-                    cameraPositionState = cameraPositionState,
-                    uiSettings = MapUiSettings(zoomControlsEnabled = false, tiltGesturesEnabled = false, myLocationButtonEnabled = false),
-                    properties = MapProperties(mapType = MapType.NORMAL, isMyLocationEnabled = true)
-                ) {
-                    Polyline(
-                        points = telemetry.route.map { LatLng(it.lat, it.lng) },
-                        color = Green,
-                        width = 8f
-                    )
-                }
+                )
             }
         }
 
@@ -774,6 +765,10 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
                 DataLine("GPS quality", "${(telemetry.gpsQuality * 100).roundToInt()}%")
                 DataLine("GPS accuracy", telemetry.gpsAccuracyM?.let { "%.0f m".format(it) } ?: "waiting")
                 DataLine(
+                    "Mobility",
+                    "${telemetry.transportMode.name.replace('_', ' ')} (${telemetry.mobility.confidence}%)",
+                )
+                DataLine(
                     "Road zone",
                     telemetry.roadContext.zoneType.name.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() },
                 )
@@ -785,7 +780,10 @@ private fun DriveScreen(modifier: Modifier, telemetry: LiveTelemetry, activity: 
                         ?.let { "${it.roundToInt()} km/h" }
                         ?: "Not verified",
                 )
-                DataLine("Road confidence", "${(telemetry.roadContext.confidence * 100).roundToInt()}%")
+                DataLine(
+                    "Context confidence",
+                    "${(telemetry.roadContext.confidence * 100).roundToInt()}%",
+                )
                 DataLine("Sensor samples", telemetry.sensorCount.toString())
                 DataLine("Location samples", telemetry.locationCount.toString())
                             }
@@ -858,7 +856,7 @@ private fun VehicleSelectionCard(vehicles: List<Vehicle>, selectedId: String?, o
 }
 
 @Composable
-private fun TripsScreen(modifier: Modifier) {
+private fun TripsScreen(modifier: Modifier, telemetry: LiveTelemetry) {
     val context = LocalContext.current
     val db = remember { CrediSafeDb(context) }
     var trips by remember { mutableStateOf(emptyList<TripRecord>()) }
@@ -866,7 +864,7 @@ private fun TripsScreen(modifier: Modifier) {
     var selectedTrip by remember { mutableStateOf<TripRecord?>(null) }
     var subTab by remember { mutableIntStateOf(0) } // 0: History, 1: Leaderboard
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(telemetry.active) {
         trips = db.listTrips()
     }
 
@@ -883,13 +881,13 @@ private fun TripsScreen(modifier: Modifier) {
                 Text("Export")
             }
         }
-        
+
         Spacer(Modifier.height(16.dp))
-        
+
         Row(Modifier.fillMaxWidth().background(Surface1, RoundedCornerShape(12.dp)).padding(4.dp)) {
             val historyWeight by animateFloatAsState(if (subTab == 0) 1.2f else 0.8f)
             val rankWeight by animateFloatAsState(if (subTab == 1) 1.2f else 0.8f)
-            
+
             TabButton("History", subTab == 0, Modifier.weight(historyWeight)) { subTab = 0 }
             TabButton("Leaderboard", subTab == 1, Modifier.weight(rankWeight)) { subTab = 1 }
         }
@@ -905,9 +903,9 @@ private fun TripsScreen(modifier: Modifier) {
                         Text("No trips yet", color = White, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Start a real journey and its score, XP and reward points will appear here.", 
-                            color = Muted, 
-                            fontSize = 12.sp, 
+                            "Start a real journey and its score, XP and reward points will appear here.",
+                            color = Muted,
+                            fontSize = 12.sp,
                             lineHeight = 18.sp,
                             textAlign = TextAlign.Center
                         )
@@ -979,6 +977,14 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
         events = db.listEvents(trip.id)
     }
 
+    val (statusLabel, statusColor) = when {
+        trip.status == "REJECTED" -> "INELIGIBLE" to Error
+        trip.isAuthoritative && trip.status == "VALIDATED" -> "SERVER CONFIRMED" to Green
+        trip.syncStatus == "SYNCING" -> "SYNCING VERIFICATION" to Warning
+        trip.syncStatus == "FAILED" -> "SYNC FAILED (RETRYING)" to Warning
+        else -> "ESTIMATED PREVIEW" to Gold
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface1,
@@ -986,24 +992,17 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
             Column {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Journey Details", color = White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    val statusText = if (trip.isAuthoritative) "SERVER CONFIRMED" else trip.syncStatus
-                    val syncColor = when (trip.syncStatus) {
-                        "SYNCED" -> Green
-                        "FAILED" -> Error
-                        "SYNCING" -> Warning
-                        else -> Muted
-                    }
-                    Text(statusText, color = syncColor, fontSize = 8.sp, fontWeight = FontWeight.Black)
+                    Text(statusLabel, color = statusColor, fontSize = 8.sp, fontWeight = FontWeight.Black)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy • HH:mm", Locale.getDefault()) }
                     Text(dateFormat.format(Date(trip.startedAt)), color = Muted, fontSize = 11.sp)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "ID: ${trip.id.take(8)}...", 
-                        color = Muted, 
+                        "ID: ${trip.id.take(8)}...",
+                        color = Muted,
                         fontSize = 10.sp,
-                        modifier = Modifier.clickable { 
+                        modifier = Modifier.clickable {
                             clipboardManager.setText(AnnotatedString(trip.id))
                         }
                     )
@@ -1026,12 +1025,19 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
                     DataLine("Max Speed", "%.1f km/h".format(trip.maxSpeedKmh))
                     DataLine("GPS Confidence", "${(trip.gpsQuality * 100).roundToInt()}%")
                     DataLine("Classification", trip.tripClassification)
+                    DataLine("Mobility", "${trip.mobilityMode.lowercase().replace('_', ' ')} (${trip.mobilityConfidence}%)")
                     DataLine("Road zone", trip.roadZoneType.replace('_', ' '))
                     DataLine("Road", trip.roadName ?: "Unavailable")
                     DataLine(
                         "Trusted speed limit",
                         trip.roadSpeedLimitKmh?.let { "${it.roundToInt()} km/h" } ?: "Not verified",
                     )
+                }
+                if (!trip.eligibilityReason.isNull_or_blank_safe()) {
+                    Spacer(Modifier.height(12.dp))
+                    DiagnosticSection("Eligibility & Decision") {
+                        Text(trip.eligibilityReason!!, color = if (trip.status == "REJECTED") Error else Muted, fontSize = 11.sp, lineHeight = 16.sp)
+                    }
                 }
                 if (events.isNotEmpty()) {
                     Spacer(Modifier.height(12.dp))
@@ -1068,50 +1074,57 @@ private fun TripDetailDialog(trip: TripRecord, db: CrediSafeDb, onDismiss: () ->
     )
 }
 
+private fun String?.isNull_or_blank_safe(): Boolean = this == null || this.isBlank()
+
 @Composable
-private fun RewardsScreen(modifier: Modifier) {
+private fun RewardsScreen(modifier: Modifier, telemetry: LiveTelemetry) {
     val context = LocalContext.current
     val db = remember { CrediSafeDb(context) }
     var trips by remember { mutableStateOf(emptyList<TripRecord>()) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(telemetry.active) {
         trips = db.listTrips()
     }
 
     val points = trips.sumOf { it.rewardPoints ?: 0 }
+    val totalXp = trips.sumOf { it.xp ?: 0 }
+    val levelInfo = XpEngine.calculateLevelInfo(totalXp)
 
     Column(
         modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text("REWARD PROGRESS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text("REWARD PROGRESSION", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
         Text("Earn from real journeys.", color = White, fontSize = 30.sp, fontWeight = FontWeight.Black)
 
         Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
-                        Text("Available Points", color = Muted, fontSize = 11.sp)
+                        Text("Available Reward Points", color = Muted, fontSize = 11.sp)
                         Text(points.toString(), color = Green, fontSize = 42.sp, fontWeight = FontWeight.Black)
                     }
                     Icon(Icons.Default.Redeem, null, tint = Green, modifier = Modifier.size(48.dp).alpha(0.2f))
                 }
                 Spacer(Modifier.height(12.dp))
                 Box(Modifier.fillMaxWidth().height(6.dp).background(Surface2, CircleShape)) {
-                    val progress = (points / 2000f).coerceIn(0f, 1f)
-                    Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(Green, CircleShape))
+                    Box(Modifier.fillMaxWidth(levelInfo.progressPercent).fillMaxHeight().background(Green, CircleShape))
                 }
                 Spacer(Modifier.height(8.dp))
-                Text("${(2000 - points).coerceAtLeast(0)} points remaining for ₹200 Fuel Voucher", color = Muted, fontSize = 10.sp)
+                Text(
+                    "Level ${levelInfo.currentLevel} • ${levelInfo.xpRemaining} XP remaining to unlock Level ${levelInfo.currentLevel + 1}",
+                    color = Muted,
+                    fontSize = 11.sp,
+                )
             }
         }
 
-        Text("PARTNER PERKS", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
-        
-        PerkCard("Fuel Voucher", "Get ₹200 off on your next fill-up.", "2000 pts", Icons.Default.DirectionsCar)
-        PerkCard("FASTag Cashback", "Earn 10% cashback on toll payments.", "5000 pts", Icons.Default.Route)
-        PerkCard("Safe Driver Shield", "Up to 15% discount on insurance premiums.", "10000 pts", Icons.Default.Shield)
-        
+        Text("PARTNER PERKS & PROGRESSION", color = GreenSoft, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+
+        PerkCard("Fuel Partner Credit", "Level progression benefit • Subject to partner verification", "Level 2 Unlock", Icons.Default.DirectionsCar)
+        PerkCard("Toll & FASTag Benefit", "Level progression benefit • Subject to partner verification", "Level 3 Unlock", Icons.Default.Route)
+        PerkCard("Insurance Mobility Shield", "Level progression benefit • Subject to partner verification", "Level 5 Unlock", Icons.Default.Shield)
+
         Spacer(Modifier.height(20.dp))
     }
 }
@@ -1203,16 +1216,21 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
             DiagnosticBar("Vertical", telemetry.verticalAcc, 10.0, White)
         }
 
-        DiagnosticSection("GPS & Persistence") {
-            DataLine("Quality Score", "%.2f".format(telemetry.gpsQuality))
+        DiagnosticSection("GPS, Road & Mobility") {
+            DataLine("GPS Quality", "%.2f".format(telemetry.gpsQuality))
             DataLine("Accuracy", "${telemetry.gpsAccuracyM ?: 0.0} m")
+            DataLine("Activity", "${telemetry.mobility.activity.name} (${telemetry.mobility.confidence}%)")
+            DataLine("Transport Mode", telemetry.transportMode.name)
+            DataLine("Road Zone", telemetry.roadContext.zoneType.name)
+            DataLine("Road Matched", telemetry.roadContext.roadMatched.toString())
+            DataLine("Road Confidence", "%.2f".format(telemetry.roadContext.confidence))
             DataLine("Sensor Samples", telemetry.sensorCount.toString())
             DataLine("Location Samples", telemetry.locationCount.toString())
         }
 
         DiagnosticSection("Network Connectivity") {
             val context = LocalContext.current
-            val apiHost = remember { 
+            val apiHost = remember {
                 try {
                     java.net.URL(com.credisafe.mobile.BuildConfig.CREDISAFE_API_BASE_URL).host
                 } catch (e: Exception) {
@@ -1221,11 +1239,11 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
             }
             var backendHealth by remember { mutableStateOf("Checking...") }
             val syncManager = remember { com.credisafe.mobile.data.TripSyncManager(context) }
-            
+
             LaunchedEffect(Unit) {
                 backendHealth = if (syncManager.checkHealth()) "Connected" else "Unavailable"
             }
-            
+
             DataLine("API Host", apiHost)
             DataLine("Backend Health", backendHealth)
             DataLine("Stream Status", telemetry.streamStatus.name)
@@ -1274,7 +1292,7 @@ private fun CompatibilityScreen(modifier: Modifier, onBack: () -> Unit) {
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(issue.suggestion, color = Muted, fontSize = 12.sp, lineHeight = 18.sp)
-                    
+
                     if (issue.actionIntent != null) {
                         Spacer(Modifier.height(12.dp))
                         Button(
@@ -1336,9 +1354,10 @@ private fun DiagnosticBar(label: String, value: Double, range: Double, color: Co
 
 @Composable
 private fun ProfileScreen(
-    modifier: Modifier, 
+    modifier: Modifier,
+    telemetry: LiveTelemetry,
     auth: AuthManager,
-    onDiagnostics: () -> Unit, 
+    onDiagnostics: () -> Unit,
     onCompatibility: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -1348,7 +1367,7 @@ private fun ProfileScreen(
     var vehicles by remember { mutableStateOf(emptyList<Vehicle>()) }
     val compatibility = remember { CompatibilityChecker.check(context) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(telemetry.active) {
         trips = db.listTrips()
         vehicles = db.listVehicles(auth.getUserId() ?: "")
     }
@@ -1370,8 +1389,8 @@ private fun ProfileScreen(
         ) {
             Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Default.Shield, 
-                    null, 
+                    Icons.Default.Shield,
+                    null,
                     tint = if (compatibility.issues.any { it.level == IssueLevel.CRITICAL }) Error else if (compatibility.issues.isNotEmpty()) Warning else Green
                 )
                 Spacer(Modifier.width(12.dp))
@@ -1379,7 +1398,7 @@ private fun ProfileScreen(
                     Text("System Health", color = White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Text(
                         if (compatibility.issues.isEmpty()) "Fully compatible" else "${compatibility.issues.size} issues detected",
-                        color = Muted, 
+                        color = Muted,
                         fontSize = 11.sp
                     )
                 }
@@ -1415,7 +1434,7 @@ private fun ProfileScreen(
         }
 
         Spacer(Modifier.height(12.dp))
-        
+
         OutlinedButton(
             onClick = {
                 auth.logout()
@@ -1433,7 +1452,7 @@ private fun ProfileScreen(
 
         Spacer(Modifier.height(12.dp))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Text("v2.3.0 • PROD-RENDER", color = Muted.copy(alpha = 0.3f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+            Text("v${BuildConfig.VERSION_NAME} • ${BuildConfig.DISTRIBUTION_CHANNEL.uppercase()}", color = Muted.copy(alpha = 0.45f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -1442,7 +1461,7 @@ private fun ProfileScreen(
 private fun Onboarding(onAccept: () -> Unit) {
     val context = LocalContext.current
     val compatibility = remember { CompatibilityChecker.check(context) }
-    
+
     Column(
         Modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -1457,7 +1476,7 @@ private fun Onboarding(onAccept: () -> Unit) {
         Text("Drive safe.", color = White, fontSize = 48.sp, fontWeight = FontWeight.Black)
         Text("Earn more.", color = Green, fontSize = 48.sp, fontWeight = FontWeight.Black)
         Spacer(Modifier.height(16.dp))
-        
+
         if (compatibility.issues.any { it.level == IssueLevel.CRITICAL }) {
             Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF3A1A1D)), modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp)) {
@@ -1469,7 +1488,7 @@ private fun Onboarding(onAccept: () -> Unit) {
             Spacer(Modifier.height(16.dp))
         }
 
-        Text("To track your safety performance accurately, CrediSafe collects precise location and motion data even when the app is in the background or not in use while a journey is active.", color = Muted, fontSize = 15.sp, lineHeight = 22.sp)
+        Text("While a journey is active, CrediSafe uses precise location, motion sensors and mobility recognition to understand whether the recording is a driving trip. Tracking continues through the visible foreground-service notification when you leave the app.", color = Muted, fontSize = 15.sp, lineHeight = 22.sp)
         Spacer(Modifier.height(24.dp))
         Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Surface1), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
@@ -1479,7 +1498,7 @@ private fun Onboarding(onAccept: () -> Unit) {
                     Text("PROMINENT DISCLOSURE", color = Gold, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("Location and motion sensors are monitored continuously during a journey to detect events like harsh braking. This data is processed locally and uploaded only when the trip ends.", color = White, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("Location, motion sensors and Android activity recognition are used during a journey to detect driving events and filter walking/running/cycling or possible non-driving travel. Telemetry is processed local-first and eligible trips sync after completion.", color = White, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(Modifier.height(10.dp))
                 Text("You can stop tracking at any time via the 'Stop' button in the persistent notification.", color = Warning, fontSize = 12.sp, lineHeight = 18.sp)
             }
@@ -1506,7 +1525,7 @@ private fun ScoreRing(score: Int, modifier: Modifier) {
         score > 0 -> Error
         else -> Muted
     }
-    
+
     Box(modifier, contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             drawArc(Border, -90f, 360f, false, style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
@@ -1548,7 +1567,7 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
         score > 0 -> Error
         else -> Muted
     }
-    
+
     val infiniteTransition = rememberInfiniteTransition(label = "sync_pulse")
     val alpha by infiniteTransition.animateFloat(
         initialValue = 0.4f,
@@ -1561,8 +1580,8 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
     )
 
     Card(
-        shape = RoundedCornerShape(22.dp), 
-        colors = CardDefaults.cardColors(containerColor = Surface1), 
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = Surface1),
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
     ) {
         Column(Modifier.padding(16.dp)) {
@@ -1595,9 +1614,9 @@ private fun TripRow(trip: TripRecord, onClick: () -> Unit) {
                             else -> Muted
                         }
                         Text(
-                            statusText, 
-                            color = syncColor, 
-                            fontSize = 8.sp, 
+                            statusText,
+                            color = syncColor,
+                            fontSize = 8.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = if (trip.syncStatus == "SYNCING") Modifier.alpha(alpha) else Modifier
                         )

@@ -25,7 +25,7 @@ async function runTests() {
       durationMs: 300000,
       safetyScore: 95,
       telemetryQuality: 0.98,
-      engineVersion: '2.1'
+      engineVersion: '2.7'
     }, authHeader);
     console.log('Trip Created:', tripRes.data);
 

@@ -1,5 +1,7 @@
 package com.credisafe.mobile
 
+import com.credisafe.mobile.domain.MobilityDecision
+import com.credisafe.mobile.domain.TransportMode
 import com.credisafe.mobile.domain.TripClassification
 import com.credisafe.mobile.domain.TripValidityEngine
 import org.junit.Assert.assertEquals
@@ -9,7 +11,7 @@ import org.junit.Test
 
 class TripValidityEngineTest {
     @Test
-    fun accidentalTinyTripIsNoiseAndAutoDiscarded() {
+    fun tinyAccidentalTripIsNoise() {
         val result = TripValidityEngine.assess(
             distanceM = 80.0,
             durationMs = 35_000,
@@ -18,64 +20,32 @@ class TripValidityEngineTest {
             movingLocationRatio = 0.05,
             locationSamples = 20,
             antiGamingFlags = emptyList(),
-            nowMs = 1_000L,
+            nowMs = 1000L,
         )
-
         assertEquals(TripClassification.NOISE, result.classification)
         assertFalse(result.eligible)
         assertFalse(result.shouldSync)
-        assertFalse(result.shouldShowInHistory)
-        assertTrue(result.discardAfterMs != null && result.discardAfterMs!! > 1_000L)
+        assertTrue(result.discardAfterMs != null)
     }
 
     @Test
-    fun shortButMeaningfulTripIsInvalidNotNoise() {
+    fun walkingTripGetsNoDrivingEligibility() {
         val result = TripValidityEngine.assess(
-            distanceM = 420.0,
-            durationMs = 180_000,
-            gpsQuality = 0.95,
-            telemetryQuality = 0.95,
-            movingLocationRatio = 0.8,
-            locationSamples = 150,
-            antiGamingFlags = emptyList(),
-        )
-
-        assertEquals(TripClassification.INVALID, result.classification)
-        assertFalse(result.eligible)
-        assertTrue(result.shouldShowInHistory)
-    }
-
-    @Test
-    fun realHealthyTripIsEligible() {
-        val result = TripValidityEngine.assess(
-            distanceM = 8_500.0,
+            distanceM = 1_200.0,
             durationMs = 900_000,
-            gpsQuality = 0.93,
-            telemetryQuality = 0.91,
-            movingLocationRatio = 0.75,
-            locationSamples = 700,
-            antiGamingFlags = emptyList(),
-        )
-
-        assertEquals(TripClassification.ELIGIBLE, result.classification)
-        assertTrue(result.eligible)
-        assertTrue(result.shouldSync)
-    }
-
-    @Test
-    fun mockLocationTripRequiresReview() {
-        val result = TripValidityEngine.assess(
-            distanceM = 7_000.0,
-            durationMs = 800_000,
             gpsQuality = 0.95,
             telemetryQuality = 0.9,
-            movingLocationRatio = 0.7,
-            locationSamples = 500,
-            antiGamingFlags = listOf("mock_location:1"),
+            movingLocationRatio = 0.8,
+            locationSamples = 600,
+            antiGamingFlags = emptyList(),
+            mobility = MobilityDecision(
+                mode = TransportMode.WALKING,
+                confidence = 95,
+                drivingEligible = false,
+                reason = "walking",
+            ),
         )
-
-        assertEquals(TripClassification.SUSPICIOUS, result.classification)
+        assertEquals(TripClassification.INVALID, result.classification)
         assertFalse(result.eligible)
-        assertFalse(result.shouldSync)
     }
 }

@@ -6,7 +6,6 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
-import retrofit2.http.Query
 
 @Serializable
 data class AuthRequest(
@@ -14,14 +13,14 @@ data class AuthRequest(
     val email: String? = null,
     val password: String? = null,
     val name: String? = null,
-    val clientSecret: String? = null
+    val clientSecret: String? = null,
 )
 
 @Serializable
 data class AuthResponse(
     val accessToken: String,
     val expiresIn: Long,
-    val userId: String
+    val userId: String,
 )
 
 @Serializable
@@ -51,7 +50,12 @@ data class TripUploadRequest(
     val roadSpeedLimitKmh: Double? = null,
     val roadContextConfidence: Double = 0.0,
     val roadContextSource: String = "NONE",
-    val events: List<EventUpload>
+    val zoneProfileJson: String? = null,
+    val mobilityMode: String = "UNKNOWN",
+    val mobilityConfidence: Int = 0,
+    val mobilityReason: String? = null,
+    val roadMatchRatio: Double = 0.0,
+    val events: List<EventUpload>,
 )
 
 @Serializable
@@ -63,7 +67,7 @@ data class EventUpload(
     val speedKmh: Double = 0.0,
     val longitudinalAccel: Double = 0.0,
     val lateralAccel: Double = 0.0,
-    val detail: String?
+    val detail: String?,
 )
 
 @Serializable
@@ -76,7 +80,7 @@ data class TelemetryUploadRequest(
     val compression: String,
     val contentType: String,
     val sha256: String,
-    val data: String // Base64 encoded compressed data
+    val data: String,
 )
 
 @Serializable
@@ -103,24 +107,11 @@ data class LiveTelemetryFrame(
     val roadZoneType: String = "UNKNOWN",
     val roadName: String? = null,
     val speedLimitKmh: Double? = null,
-    val roadContextConfidence: Double = 0.0
+    val roadContextConfidence: Double = 0.0,
+    val recognizedActivity: String = "UNKNOWN",
+    val activityConfidence: Int = 0,
+    val transportMode: String = "UNKNOWN",
 )
-
-@Serializable
-data class SyncAckRequest(
-    val tripIds: List<String>
-)
-
-@Serializable
-data class UploadResponse(
-    val success: Boolean,
-    val message: String? = null,
-    val authoritativeXp: Int? = null,
-    val authoritativePoints: Int? = null,
-    val engineVersion: String? = null
-)
-
-
 
 @Serializable
 data class RoadContextResponse(
@@ -134,17 +125,62 @@ data class RoadContextResponse(
     val source: String = "NONE",
     val snappedLatitude: Double? = null,
     val snappedLongitude: Double? = null,
+    val providerAvailable: Boolean = false,
+    val roadMatched: Boolean = false,
+)
+
+@Serializable
+data class RoadContextRequest(
+    val latitude: Double,
+    val longitude: Double,
+    val previousLatitude: Double? = null,
+    val previousLongitude: Double? = null,
+    val accuracyM: Double? = null,
+    val speedKmh: Double? = null,
+    val bearing: Double? = null,
+)
+
+@Serializable
+data class SyncAckRequest(val tripIds: List<String>)
+
+@Serializable
+data class XpBreakdownDto(
+    val code: String,
+    val points: Int,
+    val reason: String,
+)
+
+@Serializable
+data class UploadResponse(
+    val success: Boolean,
+    val status: String? = null,
+    val message: String? = null,
+    val authoritativeXp: Int? = null,
+    val authoritativePoints: Int? = null,
+    val authoritativeSafetyScore: Int? = null,
+    val engineVersion: String? = null,
+    val eligible: Boolean? = null,
+    val eligibilityReason: String? = null,
+    val reasonCodes: List<String> = emptyList(),
+    val breakdown: List<XpBreakdownDto> = emptyList(),
+    val totalXp: Int? = null,
+    val currentLevel: Int? = null,
+    val currentLevelStartingXp: Int? = null,
+    val nextLevelRequiredXp: Int? = null,
+    val progressPercent: Double? = null,
+    val xpRemaining: Int? = null,
+    val dailyCapRemaining: Int? = null,
 )
 
 @Serializable
 data class HealthResponse(
     val status: String,
     val database: String,
-    val version: String
+    val version: String,
 )
 
 interface CloudApi {
-    @GET("../health") // Health is usually top-level
+    @GET("../health")
     suspend fun checkHealth(): Response<HealthResponse>
 
     @POST("auth/session")
@@ -156,19 +192,17 @@ interface CloudApi {
     @POST("trips/{tripId}/events")
     suspend fun uploadEvents(
         @Path("tripId") tripId: String,
-        @Body events: List<EventUpload>
+        @Body events: List<EventUpload>,
     ): Response<UploadResponse>
 
     @POST("trips/{tripId}/telemetry")
     suspend fun uploadTelemetry(
         @Path("tripId") tripId: String,
-        @Body telemetry: TelemetryUploadRequest
+        @Body telemetry: TelemetryUploadRequest,
     ): Response<UploadResponse>
 
     @POST("trips/{tripId}/complete")
-    suspend fun completeTrip(
-        @Path("tripId") tripId: String
-    ): Response<UploadResponse>
+    suspend fun completeTrip(@Path("tripId") tripId: String): Response<UploadResponse>
 
     @GET("trips/{tripId}")
     suspend fun getTripDetails(@Path("tripId") tripId: String): Response<TripUploadRequest>
@@ -176,13 +210,8 @@ interface CloudApi {
     @GET("trips")
     suspend fun listTrips(): Response<List<TripUploadRequest>>
 
-    @GET("road/context")
-    suspend fun getRoadContext(
-        @Query("latitude") latitude: Double,
-        @Query("longitude") longitude: Double,
-        @Query("speedKmh") speedKmh: Double? = null,
-        @Query("bearing") bearing: Double? = null,
-    ): Response<RoadContextResponse>
+    @POST("road/context")
+    suspend fun getRoadContext(@Body request: RoadContextRequest): Response<RoadContextResponse>
 
     @POST("sync/ack")
     suspend fun acknowledgeSync(@Body request: SyncAckRequest): Response<UploadResponse>

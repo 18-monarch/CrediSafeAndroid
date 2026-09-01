@@ -78,7 +78,6 @@ class LiveStreamManager(context: Context) {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 reconnectAttempt = 0
                 reconnectJob?.cancel()
-                Log.d("LiveStream", "Connected to live stream for $tripId")
                 TripSession.update { it.copy(streamStatus = StreamStatus.LIVE) }
             }
 

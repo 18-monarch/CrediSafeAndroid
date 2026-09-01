@@ -16,8 +16,8 @@ object TelematicsConfig {
     const val SENSOR_MAX_LATENCY_US = 100_000
     const val STORAGE_INTERVAL_MS = 100L // ~10 Hz persisted telemetry.
 
-    // Speed-limit enforcement is context-aware in RoadRuleEngine.
-    // Never add a universal legal speed limit here.
+    // Legal speed limits are context-aware and resolved by RoadRuleEngine.
+    // Never add a universal city/highway legal limit here.
 
     const val HARSH_BRAKING_MPS2 = -2.5
     const val HARSH_ACCELERATION_MPS2 = 2.7

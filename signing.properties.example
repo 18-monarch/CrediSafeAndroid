@@ -1,0 +1,4 @@
+storeFile=.signing/credisafe-beta.keystore
+storePassword=CHANGE_ME
+keyAlias=credisafe-beta
+keyPassword=CHANGE_ME

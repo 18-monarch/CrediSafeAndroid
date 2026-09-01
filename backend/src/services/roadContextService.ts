@@ -8,128 +8,173 @@ export interface RoadContextResult {
   speedLimitKmh: number | null;
   speedLimitTrusted: boolean;
   confidence: number;
-  source: 'GOOGLE_ROADS_SPEED_LIMIT' | 'GOOGLE_ROADS_GEOCODE' | 'GOOGLE_ROADS' | 'NONE';
+  source: 'VALHALLA_OSM_SPEED_LIMIT' | 'VALHALLA_OSM' | 'NONE';
   snappedLatitude: number | null;
   snappedLongitude: number | null;
+  providerAvailable: boolean;
+  roadMatched: boolean;
 }
 
-const UNKNOWN: RoadContextResult = {
-  zoneType: 'UNKNOWN',
-  roadName: null,
-  placeId: null,
-  jurisdiction: null,
-  speedLimitKmh: null,
-  speedLimitTrusted: false,
-  confidence: 0,
-  source: 'NONE',
-  snappedLatitude: null,
-  snappedLongitude: null,
-};
+export interface RoadContextQuery {
+  latitude: number;
+  longitude: number;
+  previousLatitude?: number;
+  previousLongitude?: number;
+  accuracyM?: number;
+}
 
-function classifyRoad(routeName: string | null, hasLocality: boolean): RoadContextResult['zoneType'] {
-  const value = (routeName || '').toLowerCase();
-  if (/\b(expressway|freeway|motorway)\b/.test(value)) return 'EXPRESSWAY';
-  if (/\b(national highway|state highway|highway)\b/.test(value) || /\b[ns]h\s*-?\s*\d+\b/i.test(routeName || '')) return 'HIGHWAY';
-  if (/\bservice road\b/.test(value)) return 'SERVICE_ROAD';
-  if (/\b(arterial|ring road|bypass)\b/.test(value)) return 'ARTERIAL';
-  if (hasLocality) return 'URBAN';
+type CacheEntry = { value: RoadContextResult; expiresAt: number };
+const cache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 20_000;
+const MAX_CACHE_ENTRIES = 2_000;
+
+const providerUnavailable = (): RoadContextResult => ({
+  zoneType: 'UNKNOWN', roadName: null, placeId: null, jurisdiction: null,
+  speedLimitKmh: null, speedLimitTrusted: false, confidence: 0, source: 'NONE',
+  snappedLatitude: null, snappedLongitude: null, providerAvailable: false, roadMatched: false,
+});
+
+const noRoadMatch = (): RoadContextResult => ({ ...providerUnavailable(), providerAvailable: true });
+
+export function boundedNumber(value: unknown, min: number, max: number): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= min && number <= max ? number : null;
+}
+
+export function zoneFor(edge: any): RoadContextResult['zoneType'] {
+  const roadClass = String(edge?.road_class || '').toLowerCase();
+  const use = String(edge?.use || '').toLowerCase();
+  if (roadClass === 'motorway' || use === 'motorway') return 'EXPRESSWAY';
+  if (roadClass === 'trunk') return 'HIGHWAY';
+  if (roadClass === 'primary' || roadClass === 'secondary') return 'ARTERIAL';
+  if (roadClass === 'residential' || roadClass === 'unclassified') return 'RESIDENTIAL';
+  if (use === 'service_road' || use === 'driveway' || roadClass === 'service') return 'SERVICE_ROAD';
+  if (roadClass === 'tertiary') return 'URBAN';
   return 'UNKNOWN';
 }
 
-function addressComponent(result: any, type: string): string | null {
-  const c = result?.address_components?.find((x: any) => Array.isArray(x.types) && x.types.includes(type));
-  return c?.long_name || null;
+function firstRoadName(edge: any): string | null {
+  const first = Array.isArray(edge?.names) ? edge.names[0] : null;
+  if (typeof first === 'string' && first.trim()) return first.trim();
+  if (typeof first?.value === 'string' && first.value.trim()) return first.value.trim();
+  return null;
+}
+
+function putCache(key: string, value: RoadContextResult): void {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value as string | undefined;
+    if (oldest) cache.delete(oldest);
+  }
+  cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+function getCache(key: string): RoadContextResult | null {
+  const item = cache.get(key);
+  if (!item) return null;
+  if (Date.now() >= item.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return item.value;
 }
 
 /**
- * Server-side proxy for Google Roads/Geocoding.
- *
- * The Android app never receives GOOGLE_MAPS_SERVER_API_KEY. If the server key
- * is not configured, the endpoint intentionally returns UNKNOWN rather than
- * inventing road rules.
+ * Matches the latest GPS segment to OpenStreetMap-derived Valhalla edges.
+ * A single isolated point is deliberately not treated as a confirmed road.
+ * Public Valhalla is suitable for a fair-use beta; production should set
+ * VALHALLA_BASE_URL to a CrediSafe-controlled deployment.
  */
-export async function getRoadContext(latitude: number, longitude: number): Promise<RoadContextResult> {
-  const key = process.env.GOOGLE_MAPS_SERVER_API_KEY;
-  if (!key) return UNKNOWN;
+export async function getRoadContext(query: RoadContextQuery): Promise<RoadContextResult> {
+  const { latitude, longitude, previousLatitude, previousLongitude } = query;
+  if (previousLatitude == null || previousLongitude == null) return providerUnavailable();
+
+  const cacheKey = [previousLatitude, previousLongitude, latitude, longitude]
+    .map(value => value.toFixed(4)).join(',');
+  const cached = getCache(cacheKey);
+  if (cached) return cached;
+
+  const baseUrl = (process.env.VALHALLA_BASE_URL || 'https://valhalla1.openstreetmap.de')
+    .replace(/\/$/, '');
+  const clientId = process.env.VALHALLA_CLIENT_ID || 'CrediSafe-Open-Mobility/2.7';
+  const accuracy = boundedNumber(query.accuracyM, 3, 100) ?? 25;
 
   try {
-    const nearest = await axios.get('https://roads.googleapis.com/v1/nearestRoads', {
-      params: {
-        points: `${latitude},${longitude}`,
-        key,
+    const response = await axios.post(
+      `${baseUrl}/trace_attributes`,
+      {
+        shape: [
+          { lat: previousLatitude, lon: previousLongitude, type: 'break' },
+          { lat: latitude, lon: longitude, type: 'break' },
+        ],
+        costing: 'auto',
+        shape_match: 'map_snap',
+        units: 'kilometers',
+        trace_options: {
+          gps_accuracy: accuracy,
+          search_radius: Math.min(100, Math.max(25, accuracy * 2)),
+          breakage_distance: 2000,
+        },
+        filters: {
+          action: 'include',
+          attributes: [
+            'edge.names', 'edge.road_class', 'edge.use', 'edge.way_id',
+            'edge.speed_limit', 'matched.point', 'matched.type',
+            'matched.edge_index', 'matched.distance_from_trace_point',
+            'admin.country_text', 'admin.state_text',
+          ],
+        },
       },
-      timeout: 8000,
-    });
+      {
+        timeout: 8_000,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': clientId,
+          'X-Client-Id': clientId,
+        },
+      },
+    );
 
-    const snapped = nearest.data?.snappedPoints?.[0];
-    if (!snapped?.placeId) return UNKNOWN;
-
-    const placeId = snapped.placeId as string;
-    const snappedLatitude = snapped.location?.latitude ?? null;
-    const snappedLongitude = snapped.location?.longitude ?? null;
-
-    let geocode: any = null;
-    try {
-      const geoResponse = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
-        params: { place_id: placeId, key },
-        timeout: 8000,
-      });
-      geocode = geoResponse.data?.results?.[0] ?? null;
-    } catch {
-      // Nearest-road identity is still useful even if geocoding is unavailable.
+    const edges = Array.isArray(response.data?.edges) ? response.data.edges : [];
+    const matchedPoints = Array.isArray(response.data?.matched_points) ? response.data.matched_points : [];
+    const currentMatch = matchedPoints.at(-1);
+    const edgeIndex = Number.isInteger(currentMatch?.edge_index) ? currentMatch.edge_index : edges.length - 1;
+    const edge = edges[edgeIndex];
+    if (!edge || currentMatch?.type === 'unmatched') {
+      const result = noRoadMatch();
+      putCache(cacheKey, result);
+      return result;
     }
 
-    const routeName = addressComponent(geocode, 'route');
-    const locality =
-      addressComponent(geocode, 'locality') ||
-      addressComponent(geocode, 'administrative_area_level_2') ||
-      addressComponent(geocode, 'sublocality');
+    const snappedLatitude = boundedNumber(currentMatch?.lat, -90, 90);
+    const snappedLongitude = boundedNumber(currentMatch?.lon, -180, 180);
+    const distanceFromTrace = boundedNumber(currentMatch?.distance_from_trace_point, 0, 10_000);
+    const confidence = distanceFromTrace == null ? 0.72
+      : distanceFromTrace <= 10 ? 0.94
+      : distanceFromTrace <= 25 ? 0.86
+      : distanceFromTrace <= 50 ? 0.72 : 0.58;
+    const speedLimitKmh = boundedNumber(edge.speed_limit, 5, 160);
+    const speedLimitTrusted = speedLimitKmh != null && process.env.VALHALLA_SPEED_LIMITS_TRUSTED === 'true';
+    const admin = Array.isArray(response.data?.admins) ? response.data.admins[0] : null;
+    const jurisdiction = [admin?.state_text, admin?.country_text].filter(Boolean).join(', ') || null;
+    const wayId = edge.way_id == null ? null : String(edge.way_id);
 
-    const state = addressComponent(geocode, 'administrative_area_level_1');
-    const country = addressComponent(geocode, 'country');
-    const jurisdiction = [locality, state, country].filter(Boolean).join(', ') || null;
-    const zoneType = classifyRoad(routeName, Boolean(locality));
-
-    let speedLimitKmh: number | null = null;
-    let speedLimitTrusted = false;
-
-    // Google's Roads Speed Limits endpoint has limited licensing/access.
-    // It is opt-in so normal projects do not fail or create false rules.
-    if (process.env.GOOGLE_ROADS_SPEED_LIMITS_ENABLED === 'true') {
-      try {
-        const speedResponse = await axios.get('https://roads.googleapis.com/v1/speedLimits', {
-          params: { placeId, units: 'KPH', key },
-          timeout: 8000,
-        });
-        const raw = speedResponse.data?.speedLimits?.[0]?.speedLimit;
-        if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
-          speedLimitKmh = raw;
-          speedLimitTrusted = true;
-        }
-      } catch {
-        // Never fall back to an invented legal limit.
-      }
-    }
-
-    const confidence =
-      speedLimitTrusted ? 0.95 :
-      zoneType === 'HIGHWAY' || zoneType === 'EXPRESSWAY' ? 0.86 :
-      geocode ? 0.75 :
-      0.60;
-
-    return {
-      zoneType,
-      roadName: routeName || geocode?.formatted_address || null,
-      placeId,
+    const result: RoadContextResult = {
+      zoneType: zoneFor(edge),
+      roadName: firstRoadName(edge),
+      placeId: wayId ? `osm-way-${wayId}` : null,
       jurisdiction,
       speedLimitKmh,
       speedLimitTrusted,
       confidence,
-      source: speedLimitTrusted ? 'GOOGLE_ROADS_SPEED_LIMIT' : geocode ? 'GOOGLE_ROADS_GEOCODE' : 'GOOGLE_ROADS',
+      source: speedLimitTrusted ? 'VALHALLA_OSM_SPEED_LIMIT' : 'VALHALLA_OSM',
       snappedLatitude,
       snappedLongitude,
+      providerAvailable: true,
+      roadMatched: true,
     };
+    putCache(cacheKey, result);
+    return result;
   } catch {
-    return UNKNOWN;
+    return providerUnavailable();
   }
 }

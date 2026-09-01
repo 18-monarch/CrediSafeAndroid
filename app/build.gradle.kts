@@ -12,12 +12,27 @@ val localProperties = Properties().apply {
     if (file.exists()) file.inputStream().use(::load)
 }
 
+val signingProperties = Properties().apply {
+    val file = rootProject.file("signing.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
 val configValue: (String, String) -> String = { name, fallback ->
     localProperties.getProperty(name)?.takeIf { it.isNotBlank() }
-        ?: providers.gradleProperty(name).orNull?.takeIf { it.isNotBlank() }
         ?: System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: providers.gradleProperty(name).orNull?.takeIf { it.isNotBlank() }
         ?: fallback
 }
+
+val releaseStoreFile = signingProperties.getProperty("storeFile")?.takeIf { it.isNotBlank() }
+val releaseStorePassword = signingProperties.getProperty("storePassword")?.takeIf { it.isNotBlank() }
+val releaseKeyAlias = signingProperties.getProperty("keyAlias")?.takeIf { it.isNotBlank() }
+val releaseKeyPassword = signingProperties.getProperty("keyPassword")?.takeIf { it.isNotBlank() }
+val hasReleaseSigning =
+    releaseStoreFile != null &&
+    releaseStorePassword != null &&
+    releaseKeyAlias != null &&
+    releaseKeyPassword != null
 
 android {
     namespace = "com.credisafe.mobile"
@@ -27,25 +42,45 @@ android {
         applicationId = "com.credisafe.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = 22
-        versionName = "2.4.0"
+        versionCode = configValue("CREDISAFE_VERSION_CODE", "25").toIntOrNull() ?: 25
+        versionName = configValue("CREDISAFE_VERSION_NAME", "2.7.0-beta.1")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
 
-        // Client-side Maps SDK key. Keep the real key in local.properties or CI.
-        manifestPlaceholders["MAPS_API_KEY"] = configValue("GOOGLE_MAPS_API_KEY", "")
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = true
+            }
+        }
     }
 
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
+            versionNameSuffix = "-dev"
             val apiBaseUrl = configValue(
                 "CREDISAFE_API_DEBUG_URL",
                 "https://credisafeandroid.onrender.com/v1/",
             )
             buildConfigField("String", "CREDISAFE_API_BASE_URL", "\"${apiBaseUrl.trimEnd('/')}/\"")
+            buildConfigField("String", "DISTRIBUTION_CHANNEL", "\"development\"")
+            buildConfigField("String", "MAP_STYLE_URL", "\"https://tiles.openfreemap.org/styles/liberty\"")
         }
         release {
+            isDebuggable = false
             isMinifyEnabled = false
+            isShrinkResources = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -55,6 +90,8 @@ android {
                 "https://credisafeandroid.onrender.com/v1/",
             )
             buildConfigField("String", "CREDISAFE_API_BASE_URL", "\"${apiBaseUrl.trimEnd('/')}/\"")
+            buildConfigField("String", "DISTRIBUTION_CHANNEL", "\"website-beta\"")
+            buildConfigField("String", "MAP_STYLE_URL", "\"https://tiles.openfreemap.org/styles/liberty\"")
         }
     }
 
@@ -84,13 +121,13 @@ dependencies {
     implementation(bom)
 
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.fragment:fragment:1.8.9")
     implementation("androidx.core:core-ktx:1.19.0")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("com.google.android.gms:play-services-location:21.4.0")
-    implementation("com.google.android.gms:play-services-maps:18.2.0")
-    implementation("com.google.maps.android:maps-compose:4.4.1")
+    implementation("org.maplibre.gl:android-sdk:13.4.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("androidx.work:work-runtime-ktx:2.11.2")

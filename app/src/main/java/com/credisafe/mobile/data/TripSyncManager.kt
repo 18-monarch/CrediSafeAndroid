@@ -1,12 +1,12 @@
 package com.credisafe.mobile.data
 
 import android.content.Context
+import com.credisafe.mobile.BuildConfig
 import com.credisafe.mobile.data.api.CloudApi
 import com.credisafe.mobile.data.api.EventUpload
 import com.credisafe.mobile.data.api.SyncAckRequest
 import com.credisafe.mobile.data.api.TelemetryUploadRequest
 import com.credisafe.mobile.data.api.TripUploadRequest
-import com.credisafe.mobile.BuildConfig
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -14,27 +14,29 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import retrofit2.Retrofit
+import java.util.concurrent.TimeUnit
 
 class TripSyncManager(context: Context) {
-    private val db = CrediSafeDb(context)
-    private val auth = AuthManager(context)
-    
+    private val db = CrediSafeDb(context.applicationContext)
+    private val auth = AuthManager(context.applicationContext)
+
     private val json = Json { ignoreUnknownKeys = true }
-    
+
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .addInterceptor { chain ->
             val original = chain.request()
-            val request = original.newBuilder()
-                .apply { auth.getAuthToken()?.takeIf { it.isNotBlank() }?.let { header("Authorization", "Bearer $it") } }
-                .method(original.method, original.body)
-                .build()
+            val request = original.newBuilder().apply {
+                auth.getAuthToken()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { header("Authorization", "Bearer $it") }
+            }.method(original.method, original.body).build()
             chain.proceed(request)
         }
         .build()
-    
+
     private val api: CloudApi by lazy {
         Retrofit.Builder()
             .baseUrl(BuildConfig.CREDISAFE_API_BASE_URL)
@@ -48,7 +50,7 @@ class TripSyncManager(context: Context) {
         return try {
             val response = api.checkHealth()
             response.isSuccessful && response.body()?.status == "ok"
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
@@ -56,19 +58,18 @@ class TripSyncManager(context: Context) {
     suspend fun syncPendingTrips(): Result<Int> {
         val pending = db.getPendingTrips()
         if (pending.isEmpty()) return Result.success(0)
-        
+
         var syncedCount = 0
         var lastError: Throwable? = null
-        
+
         for (trip in pending) {
             try {
                 db.updateSyncStatus(trip.id, "SYNCING")
 
-                // 1. Create Trip
                 val flags = try {
                     val arr = JSONArray(trip.antiGamingFlagsJson ?: "[]")
                     List(arr.length()) { arr.getString(it) }
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     emptyList()
                 }
 
@@ -97,13 +98,19 @@ class TripSyncManager(context: Context) {
                     roadSpeedLimitKmh = trip.roadSpeedLimitKmh,
                     roadContextConfidence = trip.roadContextConfidence,
                     roadContextSource = trip.roadContextSource,
-                    events = emptyList() // Events uploaded separately
+                    zoneProfileJson = trip.zoneProfileJson,
+                    mobilityMode = trip.mobilityMode,
+                    mobilityConfidence = trip.mobilityConfidence,
+                    mobilityReason = trip.mobilityReason,
+                    roadMatchRatio = trip.roadMatchRatio,
+                    events = emptyList(),
                 )
-                
-                val createResponse = api.createTrip(createRequest)
-                if (!createResponse.isSuccessful) throw Exception("Failed to create trip: ${createResponse.code()}")
 
-                // 2. Upload Events
+                val createResponse = api.createTrip(createRequest)
+                if (!createResponse.isSuccessful) {
+                    throw Exception("Failed to create trip: ${createResponse.code()}")
+                }
+
                 val events = db.listEvents(trip.id).map {
                     EventUpload(
                         timestampMs = it.timestampMs,
@@ -113,51 +120,67 @@ class TripSyncManager(context: Context) {
                         speedKmh = it.speedKmh,
                         longitudinalAccel = it.longitudinalAccel,
                         lateralAccel = it.lateralAccel,
-                        detail = it.detail
+                        detail = it.detail,
                     )
                 }
                 if (events.isNotEmpty()) {
                     val eventResponse = api.uploadEvents(trip.id, events)
-                    if (!eventResponse.isSuccessful) throw Exception("Failed to upload events: ${eventResponse.code()}")
+                    if (!eventResponse.isSuccessful) {
+                        throw Exception("Failed to upload events: ${eventResponse.code()}")
+                    }
                 }
 
-                // 3. Upload Raw Telemetry (Compressed)
                 val samples = db.listSamples(trip.id)
                 if (samples.isNotEmpty()) {
                     val samplesJson = json.encodeToString(samples)
                     val compressedData = CompressionUtils.compress(samplesJson)
                     val sha256 = CompressionUtils.sha256(samplesJson)
-                    
+                    val samplingRateHz = if (samples.size > 1) {
+                        val spanSeconds =
+                            (samples.last().timestampMs - samples.first().timestampMs)
+                                .coerceAtLeast(1L) / 1000.0
+                        ((samples.size - 1) / spanSeconds).coerceIn(0.1, 50.0)
+                    } else 0.0
+
                     val telemetryRequest = TelemetryUploadRequest(
                         tripId = trip.id,
                         sampleCount = samples.size,
-                        samplingRateHz = if (samples.size > 1) {
-                            val spanSeconds = (samples.last().timestampMs - samples.first().timestampMs).coerceAtLeast(1L) / 1000.0
-                            ((samples.size - 1) / spanSeconds).coerceIn(0.1, 50.0)
-                        } else 0.0,
+                        samplingRateHz = samplingRateHz,
                         firstTimestamp = samples.first().timestampMs,
                         lastTimestamp = samples.last().timestampMs,
                         compression = "GZIP",
                         contentType = "application/json",
                         sha256 = sha256,
-                        data = compressedData
+                        data = compressedData,
                     )
                     val telemetryResponse = api.uploadTelemetry(trip.id, telemetryRequest)
-                    if (!telemetryResponse.isSuccessful) throw Exception("Failed to upload telemetry: ${telemetryResponse.code()}")
+                    if (!telemetryResponse.isSuccessful) {
+                        throw Exception("Failed to upload telemetry: ${telemetryResponse.code()}")
+                    }
                 }
 
-                // 4. Complete Trip & Get Authoritative Results
                 val completeResponse = api.completeTrip(trip.id)
                 val body = completeResponse.body()
                 if (completeResponse.isSuccessful && body?.success == true) {
                     db.updateSyncStatus(trip.id, "SYNCED")
                     if (body.authoritativeXp != null && body.authoritativePoints != null) {
-                        db.updateAuthoritativeResults(trip.id, body.authoritativeXp, body.authoritativePoints)
+                        val finalStatus = if (body.eligible == false) "REJECTED" else "VALIDATED"
+                        val breakdownJson = try {
+                            json.encodeToString(body.breakdown)
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        db.updateAuthoritativeDecision(
+                            trip.id,
+                            body.authoritativeXp,
+                            body.authoritativePoints,
+                            body.authoritativeSafetyScore ?: trip.safetyScore,
+                            finalStatus,
+                            body.eligibilityReason ?: trip.eligibilityReason,
+                            breakdownJson,
+                        )
                     }
-                    
-                    // 5. Acknowledge Sync
                     api.acknowledgeSync(SyncAckRequest(listOf(trip.id)))
-                    
                     syncedCount++
                 } else {
                     throw Exception("Failed to complete trip: ${completeResponse.code()}")
@@ -167,7 +190,7 @@ class TripSyncManager(context: Context) {
                 lastError = e
             }
         }
-        
+
         return if (lastError != null && syncedCount == 0) {
             Result.failure(lastError)
         } else {

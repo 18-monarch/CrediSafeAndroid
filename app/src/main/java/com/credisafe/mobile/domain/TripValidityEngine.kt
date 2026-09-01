@@ -1,13 +1,5 @@
 package com.credisafe.mobile.domain
 
-/**
- * Final gate between "we recorded something" and "this is a meaningful driving trip".
- *
- * The thresholds are deliberately conservative and centralized so they can be
- * calibrated from the real pilot dataset. A NOISE trip is hidden and scheduled
- * for automatic deletion; INVALID/REVIEW trips are retained for diagnostics but
- * never earn XP, rewards, streak progress, or cloud sync.
- */
 enum class TripClassification {
     ELIGIBLE,
     NOISE,
@@ -25,19 +17,17 @@ data class TripValidityResult(
 )
 
 object TripValidityEngine {
-    const val VERSION = "1.0"
+    const val VERSION = "1.1"
 
     const val MIN_ELIGIBLE_DISTANCE_M = 500.0
     const val MIN_ELIGIBLE_DURATION_MS = 120_000L
     const val MIN_GPS_QUALITY = 0.35
     const val MIN_TELEMETRY_QUALITY = 0.35
 
-    // "Accidental tap / stationary / tiny movement" rules.
     const val NOISE_MAX_DISTANCE_M = 200.0
     const val NOISE_MAX_DURATION_MS = 90_000L
     const val NOISE_LOW_MOVEMENT_DISTANCE_M = 300.0
     const val NOISE_MOVING_RATIO = 0.10
-
     const val NOISE_RETENTION_MS = 24L * 60L * 60L * 1000L
 
     fun assess(
@@ -48,6 +38,7 @@ object TripValidityEngine {
         movingLocationRatio: Double,
         locationSamples: Long,
         antiGamingFlags: List<String>,
+        mobility: MobilityDecision = MobilityDecision.unknown(),
         nowMs: Long = System.currentTimeMillis(),
     ): TripValidityResult {
         val safeMovingRatio = movingLocationRatio.coerceIn(0.0, 1.0)
@@ -65,6 +56,34 @@ object TripValidityEngine {
                 shouldSync = false,
                 shouldShowInHistory = false,
                 discardAfterMs = nowMs + NOISE_RETENTION_MS,
+            )
+        }
+
+        if (mobility.mode in setOf(
+                TransportMode.WALKING,
+                TransportMode.RUNNING,
+                TransportMode.BICYCLE,
+                TransportMode.STILL,
+            ) && mobility.confidence >= MobilityEngine.NON_DRIVING_BLOCK_CONFIDENCE
+        ) {
+            return TripValidityResult(
+                classification = TripClassification.INVALID,
+                eligible = false,
+                reason = "Not a driving trip: ${mobility.mode.name.lowercase().replace('_', ' ')} detected (${mobility.confidence}%).",
+                shouldSync = false,
+                shouldShowInHistory = true,
+            )
+        }
+
+        if (mobility.mode == TransportMode.POSSIBLE_RAIL_TRANSIT &&
+            mobility.confidence >= MobilityEngine.TRANSIT_REVIEW_CONFIDENCE
+        ) {
+            return TripValidityResult(
+                classification = TripClassification.SUSPICIOUS,
+                eligible = false,
+                reason = "Vehicle motion did not match the road network consistently; possible rail/transit journey. No driving XP issued.",
+                shouldSync = false,
+                shouldShowInHistory = true,
             )
         }
 

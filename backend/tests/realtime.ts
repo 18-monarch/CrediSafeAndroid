@@ -25,7 +25,7 @@ async function runRealtimeTest() {
       durationMs: 0,
       safetyScore: 100,
       telemetryQuality: 1.0,
-      engineVersion: '2.1'
+      engineVersion: '2.7'
     }, authHeader);
     console.log('Trip Created:', tripId);
 
@@ -70,7 +70,7 @@ async function runRealtimeTest() {
     // Wait a bit to check dashboard
     setTimeout(async () => {
       console.log('\n--- Phase 5: Verify Dashboard ---');
-      const dashRes = await axios.get(`${BASE_URL}/live/dashboard`);
+      const dashRes = await axios.get(`${BASE_URL}/live/dashboard`, authHeader);
       console.log('Dashboard Data:', JSON.stringify(dashRes.data, null, 2));
 
       if (dashRes.data.length > 0 && dashRes.data[0].tripId === tripId) {

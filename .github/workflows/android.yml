@@ -1,8 +1,10 @@
 name: Android CI
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, v2.7-open-mobility ]
   pull_request:
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -11,11 +13,25 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Backend typecheck
+        working-directory: backend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test:unit
+          npm audit --omit=dev
       - uses: android-actions/setup-android@v3
       - run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
-      - run: ./gradlew test
-      - run: ./gradlew assembleDebug
+      - name: Static verification
+        run: python3 scripts/verify-distribution.py
+      - run: chmod +x gradlew
+      - run: ./gradlew clean test assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: credisafe-debug-apk

@@ -3,6 +3,7 @@ package com.credisafe.mobile.data
 import android.content.Context
 import com.credisafe.mobile.BuildConfig
 import com.credisafe.mobile.data.api.CloudApi
+import com.credisafe.mobile.data.api.RoadContextRequest
 import com.credisafe.mobile.domain.RoadContext
 import com.credisafe.mobile.domain.RoadContextSource
 import com.credisafe.mobile.domain.RoadZoneType
@@ -13,10 +14,6 @@ import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
 
-/**
- * Thin, authenticated client for road context. The Google server-side key stays
- * on the backend; Android only talks to the CrediSafe API.
- */
 class RoadContextRepository(context: Context) {
     private val auth = AuthManager(context.applicationContext)
     private val json = Json { ignoreUnknownKeys = true }
@@ -47,11 +44,22 @@ class RoadContextRepository(context: Context) {
     suspend fun lookup(
         latitude: Double,
         longitude: Double,
+        previousLatitude: Double?,
+        previousLongitude: Double?,
+        accuracyM: Double?,
         speedKmh: Double?,
         bearing: Double?,
     ): RoadContext? {
         return try {
-            val response = api.getRoadContext(latitude, longitude, speedKmh, bearing)
+            val response = api.getRoadContext(RoadContextRequest(
+                latitude = latitude,
+                longitude = longitude,
+                previousLatitude = previousLatitude,
+                previousLongitude = previousLongitude,
+                accuracyM = accuracyM,
+                speedKmh = speedKmh,
+                bearing = bearing,
+            ))
             val body = response.body()
             if (!response.isSuccessful || body == null) return null
             RoadContext(
@@ -65,6 +73,8 @@ class RoadContextRepository(context: Context) {
                 source = enumOrDefault(body.source, RoadContextSource.NONE),
                 snappedLatitude = body.snappedLatitude,
                 snappedLongitude = body.snappedLongitude,
+                providerAvailable = body.providerAvailable,
+                roadMatched = body.roadMatched,
                 updatedAtMs = System.currentTimeMillis(),
             )
         } catch (_: Exception) {
