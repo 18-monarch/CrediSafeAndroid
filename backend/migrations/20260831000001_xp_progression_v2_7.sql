@@ -25,30 +25,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_xp_ledger_idempotency_v2
 ALTER TABLE users ADD COLUMN IF NOT EXISTS current_level INTEGER DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS level_revision INTEGER DEFAULT 1;
 
--- Reconcile existing users' levels based on total_xp using exact cumulative thresholds:
--- totalXpRequired(level) = round(100 * (level - 1)^1.5)
--- Level 1: 0, Level 2: 100, Level 3: 283, Level 4: 520, Level 5: 800, Level 6: 1118, Level 7: 1470, Level 8: 1852
+-- Reconcile existing users using the same Level 1–1000 range and exact
+-- cumulative threshold formula used by the TypeScript and Kotlin engines.
 UPDATE users
-SET current_level = CASE
-    WHEN COALESCE(total_xp, 0) >= 1852 THEN 8
-    WHEN COALESCE(total_xp, 0) >= 1470 THEN 7
-    WHEN COALESCE(total_xp, 0) >= 1118 THEN 6
-    WHEN COALESCE(total_xp, 0) >= 800 THEN 5
-    WHEN COALESCE(total_xp, 0) >= 520 THEN 4
-    WHEN COALESCE(total_xp, 0) >= 283 THEN 3
-    WHEN COALESCE(total_xp, 0) >= 100 THEN 2
-    ELSE 1
-END
-WHERE current_level IS NULL OR current_level = 1 OR current_level != CASE
-    WHEN COALESCE(total_xp, 0) >= 1852 THEN 8
-    WHEN COALESCE(total_xp, 0) >= 1470 THEN 7
-    WHEN COALESCE(total_xp, 0) >= 1118 THEN 6
-    WHEN COALESCE(total_xp, 0) >= 800 THEN 5
-    WHEN COALESCE(total_xp, 0) >= 520 THEN 4
-    WHEN COALESCE(total_xp, 0) >= 283 THEN 3
-    WHEN COALESCE(total_xp, 0) >= 100 THEN 2
-    ELSE 1
-END;
+SET current_level = COALESCE((
+    SELECT level_series.lvl
+    FROM generate_series(1, 1000) AS level_series(lvl)
+    WHERE ROUND(100.0 * POWER(level_series.lvl - 1, 1.5))
+        <= GREATEST(0, COALESCE(users.total_xp, 0))
+    ORDER BY level_series.lvl DESC
+    LIMIT 1
+), 1)
+WHERE current_level IS DISTINCT FROM COALESCE((
+    SELECT level_series.lvl
+    FROM generate_series(1, 1000) AS level_series(lvl)
+    WHERE ROUND(100.0 * POWER(level_series.lvl - 1, 1.5))
+        <= GREATEST(0, COALESCE(users.total_xp, 0))
+    ORDER BY level_series.lvl DESC
+    LIMIT 1
+), 1);
 
 CREATE INDEX IF NOT EXISTS idx_xp_ledger_user_source ON xp_ledger(user_id, source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_xp_ledger_user_created ON xp_ledger(user_id, created_at);

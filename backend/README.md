@@ -31,9 +31,16 @@ Keep `VALHALLA_SPEED_LIMITS_TRUSTED=false` unless the selected graph is verified
 
 ## Database
 
-For a new database, apply SQL migrations in filename order. Existing deployments must additionally apply `20260831000000_open_mobility_v2_7.sql`.
+For a new database, apply all SQL migrations in filename order.
 
-That migration adds password hashes/account metadata and unique trip-ledger keys. Legacy beta accounts can establish a password only from the original device/account UUID.
+For an existing deployment, apply every unapplied forward migration in filename order. Do not rerun the modified initial-schema migration against an existing database. A deployment upgrading to v2.7 may require:
+
+- 20260828000000_trip_intelligence_v2_4.sql
+- 20260829000000_mobility_intelligence_v2_6.sql
+- 20260831000000_open_mobility_v2_7.sql
+- 20260831000001_xp_progression_v2_7.sql
+
+Which migrations are required depends on which ones have already been applied to that database.
 
 ## Security behavior
 
