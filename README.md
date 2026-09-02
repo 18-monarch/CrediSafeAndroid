@@ -34,8 +34,8 @@ Map tiles never decide safety or XP. A tile outage cannot invalidate a trip. Roa
 
 ```text
 Package: com.credisafe.mobile
-Version: 2.7.0-beta.1
-Version code: 25
+Version: 2.7.0-beta.2
+Version code: 26
 Minimum Android: Android 8.0 / API 26
 Default API: https://credisafeandroid.onrender.com/v1/
 ```
