@@ -4,7 +4,11 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -51,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.credisafe.mobile.data.AuthManager
@@ -62,6 +67,9 @@ import com.credisafe.mobile.domain.CompatibilityChecker
 import com.credisafe.mobile.domain.CompatibilityState
 import com.credisafe.mobile.domain.IssueLevel
 import com.credisafe.mobile.domain.LiveTelemetry
+import com.credisafe.mobile.domain.RuntimePermissionGrants
+import com.credisafe.mobile.domain.RuntimePermissionKind
+import com.credisafe.mobile.domain.RuntimePermissionPolicy
 import com.credisafe.mobile.domain.XpEngine
 import com.credisafe.mobile.service.TelemetryForegroundService
 import com.credisafe.mobile.service.TripSession
@@ -84,10 +92,63 @@ private val Border = Color(0xFF1E2F4D)
 private val Warning = Color(0xFFF8C86A)
 private val Error = Color(0xFFFF5252)
 
+internal data class PendingTripRequest(val userId: String?, val vehicleId: String?)
+
+internal enum class PermissionPromptAction { RETRY, APP_SETTINGS, LOCATION_SETTINGS }
+
+internal data class PermissionPrompt(
+    val title: String,
+    val message: String,
+    val actionLabel: String,
+    val action: PermissionPromptAction,
+)
+
 class MainActivity : ComponentActivity() {
+    internal var permissionRevision by mutableIntStateOf(0)
+        private set
+
+    internal var permissionPrompt by mutableStateOf<PermissionPrompt?>(null)
+        private set
+
+    private var pendingTripRequest: PendingTripRequest? = null
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
+    ) { results ->
+        permissionRevision += 1
+
+        if (hasLocationPermission()) {
+            permissionPrompt = null
+            resumePendingTripIfReady()
+        } else if (results.keys.any(::isLocationPermission)) {
+            val permanentlyDenied =
+                locationRequestCount() >= 2 &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(
+                        this,
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                    ) &&
+                    !ActivityCompat.shouldShowRequestPermissionRationale(
+                        this,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    )
+
+            permissionPrompt = if (permanentlyDenied) {
+                PermissionPrompt(
+                    title = "Allow location in App settings",
+                    message = "Location access is turned off for CrediSafe. Open App settings, choose Permissions > Location, then allow access while using the app.",
+                    actionLabel = "Open App settings",
+                    action = PermissionPromptAction.APP_SETTINGS,
+                )
+            } else {
+                PermissionPrompt(
+                    title = "Location is needed for journeys",
+                    message = "CrediSafe uses location only while a journey is being recorded. Tap Try again, then choose precise or approximate location.",
+                    actionLabel = "Try again",
+                    action = PermissionPromptAction.RETRY,
+                )
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,52 +162,111 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        permissionRevision += 1
+        if (hasLocationPermission() && isLocationServiceEnabled()) {
+            permissionPrompt = null
+            resumePendingTripIfReady()
+        }
+    }
+
     fun consentAccepted() =
         getPreferences(MODE_PRIVATE).getBoolean("pilot_consent", false)
 
     fun acceptConsent() {
         getPreferences(MODE_PRIVATE).edit().putBoolean("pilot_consent", true).apply()
-        requestPermissions()
+        requestRequiredPermissions()
     }
 
-    private fun requestPermissions() {
-        val permissions = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions += Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions += Manifest.permission.ACCESS_COARSE_LOCATION
-        }
-        if (android.os.Build.VERSION.SDK_INT >= 29 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissions += Manifest.permission.ACTIVITY_RECOGNITION
-        }
-        if (android.os.Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissions += Manifest.permission.POST_NOTIFICATIONS
-        }
-        if (permissions.isNotEmpty()) permissionLauncher.launch(permissions.toTypedArray())
-    }
+    private fun currentPermissionGrants() = RuntimePermissionGrants(
+        fineLocation = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION),
+        coarseLocation = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION),
+        activityRecognition =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q ||
+                hasPermission(Manifest.permission.ACTIVITY_RECOGNITION),
+        notifications =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                hasPermission(Manifest.permission.POST_NOTIFICATIONS),
+    )
 
-    fun startTrip(userId: String?, vehicleId: String?) {
-        val allowed = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!allowed) {
-            requestPermissions()
+    private fun requestRequiredPermissions() {
+        val permissions = RuntimePermissionPolicy
+            .missing(Build.VERSION.SDK_INT, currentPermissionGrants())
+            .map { permission ->
+                when (permission) {
+                    RuntimePermissionKind.FINE_LOCATION -> Manifest.permission.ACCESS_FINE_LOCATION
+                    RuntimePermissionKind.COARSE_LOCATION -> Manifest.permission.ACCESS_COARSE_LOCATION
+                    RuntimePermissionKind.ACTIVITY_RECOGNITION -> Manifest.permission.ACTIVITY_RECOGNITION
+                    RuntimePermissionKind.NOTIFICATIONS -> Manifest.permission.POST_NOTIFICATIONS
+                }
+            }
+
+        if (permissions.isEmpty()) {
+            permissionRevision += 1
+            resumePendingTripIfReady()
             return
         }
 
-        // Mobility permission was added after the original pilot onboarding. Existing
-        // users are prompted at trip start if they have not granted it yet;
-        // recording can still continue in degraded mode if they decline.
-        if (android.os.Build.VERSION.SDK_INT >= 29 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions()
+        if (permissions.any(::isLocationPermission)) {
+            getPreferences(MODE_PRIVATE)
+                .edit()
+                .putInt(LOCATION_REQUEST_COUNT, locationRequestCount() + 1)
+                .apply()
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
+    }
+
+    fun startTrip(userId: String?, vehicleId: String?) {
+        pendingTripRequest = PendingTripRequest(userId, vehicleId)
+
+        if (!isLocationServiceEnabled()) {
+            permissionPrompt = PermissionPrompt(
+                title = "Turn on device location",
+                message = "Device location is off. Turn it on, then return to CrediSafe; your journey will start automatically when access is ready.",
+                actionLabel = "Open Location settings",
+                action = PermissionPromptAction.LOCATION_SETTINGS,
+            )
+            return
         }
 
+        requestRequiredPermissions()
+    }
+
+    internal fun resolvePermissionPrompt() {
+        when (permissionPrompt?.action) {
+            PermissionPromptAction.RETRY -> {
+                permissionPrompt = null
+                requestRequiredPermissions()
+            }
+            PermissionPromptAction.APP_SETTINGS -> {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", packageName, null),
+                    ),
+                )
+            }
+            PermissionPromptAction.LOCATION_SETTINGS ->
+                startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+            null -> Unit
+        }
+    }
+
+    internal fun dismissPermissionPrompt() {
+        permissionPrompt = null
+        pendingTripRequest = null
+    }
+
+    private fun resumePendingTripIfReady() {
+        val pending = pendingTripRequest ?: return
+        if (!hasLocationPermission() || !isLocationServiceEnabled()) return
+
+        pendingTripRequest = null
+        startTripInternal(pending.userId, pending.vehicleId)
+    }
+
+    private fun startTripInternal(userId: String?, vehicleId: String?) {
         val intent = Intent(this, TelemetryForegroundService::class.java).apply {
             action = TelemetryForegroundService.ACTION_START
             putExtra(TelemetryForegroundService.EXTRA_USER_ID, userId)
@@ -155,11 +275,39 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, intent)
     }
 
+    private fun hasPermission(permission: String) =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasLocationPermission() =
+        hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) ||
+            hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+
+    private fun isLocationPermission(permission: String) =
+        permission == Manifest.permission.ACCESS_FINE_LOCATION ||
+            permission == Manifest.permission.ACCESS_COARSE_LOCATION
+
+    private fun isLocationServiceEnabled(): Boolean {
+        val manager = getSystemService(LOCATION_SERVICE) as LocationManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            manager.isLocationEnabled
+        } else {
+            manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        }
+    }
+
+    private fun locationRequestCount() =
+        getPreferences(MODE_PRIVATE).getInt(LOCATION_REQUEST_COUNT, 0)
+
     fun stopTrip() {
         startService(
             Intent(this, TelemetryForegroundService::class.java)
                 .setAction(TelemetryForegroundService.ACTION_STOP),
         )
+    }
+
+    private companion object {
+        const val LOCATION_REQUEST_COUNT = "location_permission_request_count"
     }
 }
 
@@ -173,6 +321,14 @@ private fun CrediSafeApp() {
     val auth = remember { AuthManager(context) }
     var tab by remember { mutableStateOf(if (auth.getUserId() == null) Tab.AUTH else Tab.HOME) }
     val telemetry by TripSession.state.collectAsState()
+
+    activity.permissionPrompt?.let { prompt ->
+        PermissionPromptDialog(
+            prompt = prompt,
+            onConfirm = activity::resolvePermissionPrompt,
+            onDismiss = activity::dismissPermissionPrompt,
+        )
+    }
 
     // Smooth navigation back logic
     BackHandler(enabled = tab != Tab.HOME && tab != Tab.AUTH && tab != Tab.REGISTER) {
@@ -1255,7 +1411,9 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
 @Composable
 private fun CompatibilityScreen(modifier: Modifier, onBack: () -> Unit) {
     val context = LocalContext.current
-    val compatibility = remember { CompatibilityChecker.check(context) }
+    val activity = context as MainActivity
+    val permissionRevision = activity.permissionRevision
+    val compatibility = remember(permissionRevision) { CompatibilityChecker.check(context) }
 
     Column(
         modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(18.dp),
@@ -1458,9 +1616,39 @@ private fun ProfileScreen(
 }
 
 @Composable
+private fun PermissionPromptDialog(
+    prompt: PermissionPrompt,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = Green) },
+        title = { Text(prompt.title, color = White, fontWeight = FontWeight.Bold) },
+        text = { Text(prompt.message, color = Muted, lineHeight = 21.sp) },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Night),
+            ) {
+                Text(prompt.actionLabel, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Not now", color = Muted)
+            }
+        },
+        containerColor = Surface1,
+    )
+}
+
+@Composable
 private fun Onboarding(onAccept: () -> Unit) {
     val context = LocalContext.current
-    val compatibility = remember { CompatibilityChecker.check(context) }
+    val activity = context as MainActivity
+    val permissionRevision = activity.permissionRevision
+    val compatibility = remember(permissionRevision) { CompatibilityChecker.check(context) }
 
     Column(
         Modifier.fillMaxSize().background(Night).verticalScroll(rememberScrollState()).padding(24.dp),
@@ -1506,7 +1694,6 @@ private fun Onboarding(onAccept: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Button(
             onClick = onAccept,
-            enabled = compatibility.issues.none { it.level == IssueLevel.CRITICAL },
             modifier = Modifier.fillMaxWidth().height(54.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Green, contentColor = Night),
             shape = RoundedCornerShape(17.dp),
