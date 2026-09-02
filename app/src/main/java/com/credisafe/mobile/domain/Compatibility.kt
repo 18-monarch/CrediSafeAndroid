@@ -91,9 +91,9 @@ object CompatibilityChecker {
             )
         } else if (!hasLocationPermission) {
             issues += CompatibilityIssue(
-                IssueLevel.CRITICAL,
+                IssueLevel.INFO,
                 "Location permission not granted",
-                "Grant location permission before starting a CrediSafe journey.",
+                "Tap Continue or Start journey and CrediSafe will request location access in the app.",
             )
         }
 
