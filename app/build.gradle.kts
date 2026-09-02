@@ -42,8 +42,8 @@ android {
         applicationId = "com.credisafe.mobile"
         minSdk = 26
         targetSdk = 37
-        versionCode = configValue("CREDISAFE_VERSION_CODE", "25").toIntOrNull() ?: 25
-        versionName = configValue("CREDISAFE_VERSION_NAME", "2.7.0-beta.1")
+        versionCode = configValue("CREDISAFE_VERSION_CODE", "26").toIntOrNull() ?: 26
+        versionName = configValue("CREDISAFE_VERSION_NAME", "2.7.0-beta.2")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
