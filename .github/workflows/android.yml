@@ -28,6 +28,7 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: "11076708"
+          packages: "platform-tools"
       - name: Install Android 37 SDK and Build Tools
         run: |
           yes | sdkmanager --licenses > /dev/null || true
