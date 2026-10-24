@@ -45,66 +45,77 @@ class LiveStreamManager(context: Context) {
         connect()
     }
 
-    private fun connect() {
+    private fun connect(forceRefresh: Boolean = false) {
         val tripId = currentTripId ?: return
-        val token = auth.getAuthToken()
-        if (token.isNullOrBlank()) {
+        scope.launch {
+            val token = auth.getValidAccessToken(forceRefresh)
+            if (stoppedExplicitly || currentTripId != tripId) return@launch
+            if (token.isNullOrBlank()) {
+                TripSession.update {
+                    it.copy(
+                        streamStatus = StreamStatus.ERROR,
+                        lastError = if (auth.hasSessionMaterial())
+                            "Network unavailable. Trip is being recorded locally."
+                        else
+                            "Cloud session expired. Sign in to restore live sync. Your trip is saved locally.",
+                    )
+                }
+                return@launch
+            }
+
+            webSocket?.cancel()
+            val url = BuildConfig.CREDISAFE_API_BASE_URL
+                .replace("https://", "wss://")
+                .replace("http://", "ws://") + "live/trips/$tripId"
+
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $token")
+                .build()
+
             TripSession.update {
                 it.copy(
-                    streamStatus = StreamStatus.ERROR,
-                    lastError = "Live stream needs an authenticated session.",
+                    streamStatus = if (reconnectAttempt == 0) StreamStatus.CONNECTING else StreamStatus.RECONNECTING,
+                    lastError = null,
                 )
             }
-            return
+
+            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (stoppedExplicitly || currentTripId != tripId) {
+                        webSocket.close(1000, "Trip stopped")
+                        return
+                    }
+                    reconnectAttempt = 0
+                    reconnectJob?.cancel()
+                    TripSession.update { it.copy(streamStatus = StreamStatus.LIVE, lastError = null) }
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (stoppedExplicitly || currentTripId != tripId) return
+                    Log.w("LiveStream", "WebSocket disconnected: ${t.message}")
+                    scheduleReconnect(forceRefresh = response?.code == 401 || response?.code == 403)
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(1000, null)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (!stoppedExplicitly && currentTripId == tripId) scheduleReconnect()
+                }
+            })
         }
-
-        webSocket?.cancel()
-        val url = BuildConfig.CREDISAFE_API_BASE_URL
-            .replace("https://", "wss://")
-            .replace("http://", "ws://") + "live/trips/$tripId"
-
-        val request = Request.Builder()
-            .url(url)
-            .header("Authorization", "Bearer $token")
-            .build()
-
-        TripSession.update {
-            it.copy(
-                streamStatus = if (reconnectAttempt == 0) StreamStatus.CONNECTING else StreamStatus.RECONNECTING,
-            )
-        }
-
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                reconnectAttempt = 0
-                reconnectJob?.cancel()
-                TripSession.update { it.copy(streamStatus = StreamStatus.LIVE) }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.w("LiveStream", "WebSocket disconnected: ${t.message}")
-                if (!stoppedExplicitly) scheduleReconnect()
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(1000, null)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!stoppedExplicitly) scheduleReconnect()
-            }
-        })
     }
 
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(forceRefresh: Boolean = false) {
         if (stoppedExplicitly || currentTripId == null || reconnectJob?.isActive == true) return
         reconnectAttempt++
         TripSession.update { it.copy(streamStatus = StreamStatus.RECONNECTING) }
-
         val delayMs = min(30_000L, 1_000L * (1L shl min(reconnectAttempt - 1, 5)))
         reconnectJob = scope.launch {
             delay(delayMs)
-            if (!stoppedExplicitly) connect()
+            if (!stoppedExplicitly) connect(forceRefresh)
         }
     }
 

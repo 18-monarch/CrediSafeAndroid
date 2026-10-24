@@ -11,7 +11,9 @@ import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFact
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Authenticator
 import okhttp3.OkHttpClient
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
@@ -35,6 +37,21 @@ class TripSyncManager(context: Context) {
             }.method(original.method, original.body).build()
             chain.proceed(request)
         }
+        .authenticator(Authenticator { _, response ->
+            // Retry a rejected request at most once, without exposing tokens in logs.
+            if (response.priorResponse != null) return@Authenticator null
+            val sent = response.request.header("Authorization")
+            val alreadyRotated = auth.getAuthToken()
+            val next = if (alreadyRotated != null && sent != "Bearer $alreadyRotated") {
+                alreadyRotated
+            } else {
+                runBlocking { auth.getValidAccessToken(forceRefresh = true) }
+            }
+            if (next.isNullOrBlank()) null
+            else response.request.newBuilder()
+                .header("Authorization", "Bearer $next")
+                .build()
+        })
         .build()
 
     private val api: CloudApi by lazy {
@@ -56,7 +73,12 @@ class TripSyncManager(context: Context) {
     }
 
     suspend fun syncPendingTrips(): Result<Int> {
-        val pending = db.getPendingTrips()
+        val userId = auth.getUserId()
+            ?: return Result.failure(IllegalStateException("Sign in to sync recorded journeys."))
+        if (!auth.hasSessionMaterial()) {
+            return Result.failure(IllegalStateException("Cloud session expired; sign in to sync journeys."))
+        }
+        val pending = db.getPendingTrips(userId)
         if (pending.isEmpty()) return Result.success(0)
 
         var syncedCount = 0

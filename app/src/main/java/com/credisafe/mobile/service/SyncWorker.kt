@@ -3,6 +3,7 @@ package com.credisafe.mobile.service
 import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.CoroutineWorker
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -48,7 +49,11 @@ class SyncWorker(
                 .addTag("trip_sync")
                 .build()
 
-            WorkManager.getInstance(context).enqueue(request)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "credisafe_trip_sync",
+                ExistingWorkPolicy.KEEP,
+                request,
+            )
         }
     }
 }

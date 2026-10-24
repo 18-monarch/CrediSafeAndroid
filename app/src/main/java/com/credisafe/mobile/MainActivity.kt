@@ -67,12 +67,14 @@ import com.credisafe.mobile.domain.CompatibilityChecker
 import com.credisafe.mobile.domain.CompatibilityState
 import com.credisafe.mobile.domain.IssueLevel
 import com.credisafe.mobile.domain.LiveTelemetry
+import com.credisafe.mobile.domain.StreamStatus
 import com.credisafe.mobile.domain.RuntimePermissionGrants
 import com.credisafe.mobile.domain.RuntimePermissionKind
 import com.credisafe.mobile.domain.RuntimePermissionPolicy
 import com.credisafe.mobile.domain.XpEngine
 import com.credisafe.mobile.service.TelemetryForegroundService
 import com.credisafe.mobile.service.TripSession
+import com.credisafe.mobile.service.SyncWorker
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -319,8 +321,20 @@ private fun CrediSafeApp() {
     val context = LocalContext.current
     val activity = context as MainActivity
     val auth = remember { AuthManager(context) }
-    var tab by remember { mutableStateOf(if (auth.getUserId() == null) Tab.AUTH else Tab.HOME) }
     val telemetry by TripSession.state.collectAsState()
+    var tab by remember {
+        mutableStateOf(
+            if (!telemetry.active && (auth.getUserId() == null || !auth.hasSessionMaterial()))
+                Tab.AUTH else Tab.HOME
+        )
+    }
+    LaunchedEffect(Unit) {
+        if (auth.getUserId() != null && auth.getAuthToken() == null) {
+            // Retain access to Stop Journey while recording offline.
+            auth.getValidAccessToken()
+            if (!auth.hasSessionMaterial() && !TripSession.state.value.active) tab = Tab.AUTH
+        }
+    }
 
     activity.permissionPrompt?.let { prompt ->
         PermissionPromptDialog(
@@ -370,13 +384,15 @@ private fun CrediSafeApp() {
                     },
                     actions = {
                         if (telemetry.active) {
+                            val cloudLive = telemetry.streamStatus == StreamStatus.LIVE
                             Row(
                                 modifier = Modifier.padding(end = 12.dp).background(Surface2, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(Modifier.size(6.dp).background(Green, CircleShape))
+                                Box(Modifier.size(6.dp).background(if (cloudLive) Green else Warning, CircleShape))
                                 Spacer(Modifier.width(6.dp))
-                                Text("LIVE", color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(if (cloudLive) "CLOUD LIVE" else "RECORDING",
+                                    color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     },
@@ -423,6 +439,7 @@ private fun CrediSafeApp() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess: () -> Unit) {
+    val context = LocalContext.current
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -507,6 +524,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
                 scope.launch {
                     val res = auth.login(email, password)
                     if (res.isSuccess) {
+                        SyncWorker.enqueue(context)
                         onAuthSuccess()
                     } else {
                         val e = res.exceptionOrNull()
@@ -541,6 +559,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess: () -> Unit) {
+    val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -641,6 +660,7 @@ private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess
                 scope.launch {
                     val res = auth.login(email, password, name)
                     if (res.isSuccess) {
+                        SyncWorker.enqueue(context)
                         onAuthSuccess()
                     } else {
                         error = res.exceptionOrNull()?.message ?: "Registration failed"
@@ -1374,7 +1394,7 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
 
         DiagnosticSection("GPS, Road & Mobility") {
             DataLine("GPS Quality", "%.2f".format(telemetry.gpsQuality))
-            DataLine("Accuracy", "${telemetry.gpsAccuracyM ?: 0.0} m")
+            DataLine("Accuracy", telemetry.gpsAccuracyM?.let { "%.1f m".format(it) } ?: "Waiting for GPS")
             DataLine("Activity", "${telemetry.mobility.activity.name} (${telemetry.mobility.confidence}%)")
             DataLine("Transport Mode", telemetry.transportMode.name)
             DataLine("Road Zone", telemetry.roadContext.zoneType.name)
@@ -1394,15 +1414,20 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
                 }
             }
             var backendHealth by remember { mutableStateOf("Checking...") }
+            var checkRevision by remember { mutableIntStateOf(0) }
             val syncManager = remember { com.credisafe.mobile.data.TripSyncManager(context) }
 
-            LaunchedEffect(Unit) {
+            LaunchedEffect(checkRevision) {
+                backendHealth = "Checking..."
                 backendHealth = if (syncManager.checkHealth()) "Connected" else "Unavailable"
             }
 
             DataLine("API Host", apiHost)
             DataLine("Backend Health", backendHealth)
             DataLine("Stream Status", telemetry.streamStatus.name)
+            OutlinedButton(onClick = { checkRevision++ }) {
+                Text("Retry backend connection")
+            }
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -1598,6 +1623,7 @@ private fun ProfileScreen(
                 auth.logout()
                 onLogout()
             },
+            enabled = !telemetry.active,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Error),
             border = BorderStroke(1.dp, Surface3),

@@ -25,11 +25,12 @@ jobs:
           npm ci
           npm run typecheck
           npm run test:unit
-          npm audit --omit=dev
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: "15859902"
-      - run: android sdk install --canary platforms/android-37 build-tools/36.0.0
+          packages: "platform-tools"
+      - name: Install Android 37 SDK and Build Tools
+        run: android sdk install --canary platforms/android-37 build-tools/36.0.0
       - name: Static verification
         run: python3 scripts/verify-distribution.py
       - run: chmod +x gradlew
@@ -38,3 +39,18 @@ jobs:
         with:
           name: credisafe-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Audit production dependencies
+        working-directory: backend
+        run: |
+          npm ci
+          npm audit --omit=dev

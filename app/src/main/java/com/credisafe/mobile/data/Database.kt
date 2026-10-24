@@ -430,11 +430,12 @@ class CrediSafeDb(context: Context) :
         )
     }
 
-    fun getPendingTrips(): List<TripRecord> {
+    fun getPendingTrips(userId: String): List<TripRecord> {
         val out = mutableListOf<TripRecord>()
         readableDatabase.query(
-            "trips", null, "(sync_status='PENDING' OR sync_status='FAILED') AND status='COMPLETED' AND trip_classification='ELIGIBLE'",
-            null, null, null, "started_at ASC"
+            "trips", null,
+            "sync_status IN ('PENDING', 'FAILED', 'SYNCING') AND status='COMPLETED' AND trip_classification='ELIGIBLE' AND user_id=?",
+            arrayOf(userId), null, null, "started_at ASC"
         ).use { c ->
             while (c.moveToNext()) {
                 out += mapTripRecord(c)

@@ -1,10 +1,12 @@
 import 'dotenv/config';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { validate as isUuid } from 'uuid';
 import db from '../db/knex.js';
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
+const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export class AuthError extends Error {
@@ -23,6 +25,67 @@ function signingSecret(): string {
     throw new Error('JWT_SECRET must contain at least 32 characters.');
   }
   return secret;
+}
+
+function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function makeRefreshToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+async function issueSession(userId: string, deviceId: string) {
+  const refreshToken = makeRefreshToken();
+  await db('auth_refresh_sessions').insert({
+    id: randomUUID(),
+    user_id: userId,
+    device_id: deviceId,
+    token_hash: hashRefreshToken(refreshToken),
+    expires_at: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+  });
+  return { ...issueToken(userId), refreshToken, refreshExpiresIn: REFRESH_TTL_SECONDS };
+}
+
+/**
+ * Refresh tokens are opaque, device-bound and rotated exactly once.
+ * The database stores only SHA-256 digests, never bearer secrets.
+ */
+export async function refreshSession(deviceId: string, refreshToken: string) {
+  if (!isUuid(deviceId) || typeof refreshToken !== 'string' ||
+      !/^[A-Za-z0-9_-]{40,128}$/.test(refreshToken)) {
+    throw new AuthError(401, 'session_expired', 'Please sign in again.');
+  }
+
+  return db.transaction(async trx => {
+    const session = await trx('auth_refresh_sessions')
+      .where({ device_id: deviceId, token_hash: hashRefreshToken(refreshToken) })
+      .forUpdate()
+      .first();
+    if (!session || session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
+      throw new AuthError(401, 'session_expired', 'Please sign in again.');
+    }
+
+    const nextToken = makeRefreshToken();
+    await trx('auth_refresh_sessions').where({ id: session.id }).update({
+      token_hash: hashRefreshToken(nextToken),
+      expires_at: new Date(Date.now() + REFRESH_TTL_SECONDS * 1000),
+      last_used_at: new Date(),
+    });
+    return {
+      ...issueToken(session.user_id),
+      refreshToken: nextToken,
+      refreshExpiresIn: REFRESH_TTL_SECONDS,
+    };
+  });
+}
+
+export async function revokeSession(deviceId: string, refreshToken: string) {
+  if (!isUuid(deviceId) || typeof refreshToken !== 'string') return;
+  await db('auth_refresh_sessions').where({
+    device_id: deviceId,
+    token_hash: hashRefreshToken(refreshToken),
+  }).update({ revoked_at: new Date() });
 }
 
 function cleanEmail(value?: string): string | null {
@@ -77,7 +140,7 @@ export async function createSession(deviceId: string, rawEmail?: string, rawPass
       };
       await db('users').insert(guest);
     }
-    return issueToken(guest.id);
+    return issueSession(guest.id, deviceId);
   }
 
   const password = requirePassword(rawPassword);
@@ -130,7 +193,7 @@ export async function createSession(deviceId: string, rawEmail?: string, rawPass
     });
   }
 
-  return issueToken(user.id);
+  return issueSession(user.id, deviceId);
 }
 
 export function verifyToken(token: string) {

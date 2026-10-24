@@ -21,6 +21,14 @@ data class AuthResponse(
     val accessToken: String,
     val expiresIn: Long,
     val userId: String,
+    val refreshToken: String? = null,
+    val refreshExpiresIn: Long? = null,
+)
+
+@Serializable
+data class RefreshSessionRequest(
+    val deviceId: String,
+    val refreshToken: String,
 )
 
 @Serializable
@@ -185,6 +193,12 @@ interface CloudApi {
 
     @POST("auth/session")
     suspend fun createSession(@Body request: AuthRequest): Response<AuthResponse>
+
+    @POST("auth/refresh")
+    suspend fun refreshSession(@Body request: RefreshSessionRequest): Response<AuthResponse>
+
+    @POST("auth/logout")
+    suspend fun revokeSession(@Body request: RefreshSessionRequest): Response<UploadResponse>
 
     @POST("trips")
     suspend fun createTrip(@Body request: TripUploadRequest): Response<UploadResponse>
