@@ -67,6 +67,7 @@ import com.credisafe.mobile.domain.CompatibilityChecker
 import com.credisafe.mobile.domain.CompatibilityState
 import com.credisafe.mobile.domain.IssueLevel
 import com.credisafe.mobile.domain.LiveTelemetry
+import com.credisafe.mobile.domain.StreamStatus
 import com.credisafe.mobile.domain.RuntimePermissionGrants
 import com.credisafe.mobile.domain.RuntimePermissionKind
 import com.credisafe.mobile.domain.RuntimePermissionPolicy
