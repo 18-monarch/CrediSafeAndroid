@@ -32,6 +32,9 @@ class AuthManager(context: Context) {
     suspend fun login(email: String? = null, password: String? = null, name: String? = null) = repository.login(email, password, name)
     fun getUserId(): String? = repository.getUserId()
     fun getAuthToken(): String? = repository.getAccessToken()
+    fun hasSessionMaterial(): Boolean = repository.hasSessionMaterial()
+    suspend fun getValidAccessToken(forceRefresh: Boolean = false): String? =
+        repository.getValidAccessToken(forceRefresh)
     fun setSelectedVehicleId(id: String?) = repository.setSelectedVehicleId(id)
     fun getSelectedVehicleId(): String? = repository.getSelectedVehicleId()
     fun logout() = repository.logout()
