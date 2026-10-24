@@ -5,11 +5,23 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.credisafe.mobile.data.api.AuthRequest
 import com.credisafe.mobile.data.api.CloudApi
+import com.credisafe.mobile.data.api.RefreshSessionRequest
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class AuthRepository(context: Context, private val api: CloudApi) {
+    companion object {
+        // The UI, trip service and sync worker each create an AuthManager.
+        // Coordinate refresh token rotation across all of them.
+        private val refreshMutex = Mutex()
+        private const val TOKEN_SAFETY_WINDOW_MS = 30_000L
+    }
+
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
@@ -22,47 +34,112 @@ class AuthRepository(context: Context, private val api: CloudApi) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
-    suspend fun login(email: String? = null, password: String? = null, name: String? = null): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            val deviceId = getDeviceId()
-            val response = api.createSession(AuthRequest(deviceId, email, password, name))
-            if (response.isSuccessful) {
-                val body = response.body()
+    suspend fun login(email: String? = null, password: String? = null, name: String? = null): Result<String> =
+        withContext(Dispatchers.IO) {
+            try {
+                val response = api.createSession(AuthRequest(getDeviceId(), email, password, name))
+                val body = if (response.isSuccessful) response.body() else null
                 if (body != null) {
-                    saveSession(body.accessToken, body.expiresIn, body.userId)
+                    refreshMutex.withLock {
+                        saveSession(
+                            body.accessToken,
+                            body.expiresIn,
+                            body.userId,
+                            body.refreshToken,
+                            body.refreshExpiresIn
+                        )
+                    }
                     Result.success(body.accessToken)
                 } else {
-                    Result.failure(Exception("Empty response body"))
+                    Result.failure(Exception("Authentication failed: ${response.code()}"))
                 }
-            } else {
-                Result.failure(Exception("Auth failed: ${response.code()}"))
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
-    }
 
     private fun getDeviceId(): String {
         var id = prefs.getString("device_id", null)
         if (id == null) {
             id = UUID.randomUUID().toString()
-            prefs.edit().putString("device_id", id).apply()
+            prefs.edit().putString("device_id", id).commit()
         }
         return id
     }
 
-    private fun saveSession(token: String, expires: Long, userId: String) {
-        prefs.edit()
+    private fun saveSession(
+        token: String,
+        expires: Long,
+        userId: String,
+        refreshToken: String?,
+        refreshExpiresIn: Long?
+    ) {
+        val edit = prefs.edit()
             .putString("access_token", token)
-            .putLong("token_expires_at", System.currentTimeMillis() + (expires * 1000))
+            .putLong("token_expires_at", System.currentTimeMillis() + expires * 1000)
             .putString("user_id", userId)
-            .apply()
+        if (refreshToken != null && refreshExpiresIn != null) {
+            edit.putString("refresh_token", refreshToken)
+                .putLong("refresh_expires_at", System.currentTimeMillis() + refreshExpiresIn * 1000)
+        } else {
+            edit.remove("refresh_token").remove("refresh_expires_at")
+        }
+        // Ensure the service can read new tokens immediately on other threads.
+        edit.commit()
     }
 
     fun getAccessToken(): String? {
         val token = prefs.getString("access_token", null)
-        val expiry = prefs.getLong("token_expires_at", 0)
-        return if (token != null && System.currentTimeMillis() < expiry) token else null
+        val expiry = prefs.getLong("token_expires_at", 0L)
+        return if (!token.isNullOrBlank() &&
+            System.currentTimeMillis() + TOKEN_SAFETY_WINDOW_MS < expiry) token else null
+    }
+
+    fun hasSessionMaterial(): Boolean =
+        getAccessToken() != null || (
+            !prefs.getString("refresh_token", null).isNullOrBlank() &&
+                System.currentTimeMillis() < prefs.getLong("refresh_expires_at", 0L)
+            )
+
+    /**
+     * Network access uses a valid bearer. Refresh failures do not erase an
+     * offline driver's locally recorded trips.
+     */
+    suspend fun getValidAccessToken(forceRefresh: Boolean = false): String? =
+        withContext(Dispatchers.IO) {
+            refreshMutex.withLock {
+                if (!forceRefresh) getAccessToken()?.let { return@withLock it }
+                val refresh = prefs.getString("refresh_token", null)
+                if (refresh.isNullOrBlank()) return@withLock null
+                if (System.currentTimeMillis() >= prefs.getLong("refresh_expires_at", 0L)) {
+                    clearTokens()
+                    return@withLock null
+                }
+                try {
+                    val response = api.refreshSession(RefreshSessionRequest(getDeviceId(), refresh))
+                    val body = if (response.isSuccessful) response.body() else null
+                    if (body != null) {
+                        saveSession(
+                            body.accessToken, body.expiresIn, body.userId,
+                            body.refreshToken, body.refreshExpiresIn
+                        )
+                        body.accessToken
+                    } else {
+                        if (response.code() == 401 || response.code() == 403) clearTokens()
+                        null
+                    }
+                } catch (_: Exception) {
+                    // Temporary offline/backend failures must not sign the user out.
+                    null
+                }
+            }
+        }
+
+    private fun clearTokens() {
+        prefs.edit()
+            .remove("access_token").remove("token_expires_at")
+            .remove("refresh_token").remove("refresh_expires_at")
+            .commit()
     }
 
     fun getUserId(): String? = prefs.getString("user_id", null)
@@ -74,6 +151,16 @@ class AuthRepository(context: Context, private val api: CloudApi) {
     fun getSelectedVehicleId(): String? = prefs.getString("selected_vehicle_id", null)
 
     fun logout() {
-        prefs.edit().remove("access_token").remove("token_expires_at").remove("user_id").apply()
+        val refresh = prefs.getString("refresh_token", null)
+        val deviceId = getDeviceId()
+        clearTokens()
+        prefs.edit().remove("user_id").commit()
+        if (!refresh.isNullOrBlank()) {
+            // Best-effort server revocation; local logout works while offline.
+            CoroutineScope(Dispatchers.IO).launch {
+                try { api.revokeSession(RefreshSessionRequest(deviceId, refresh)) }
+                catch (_: Exception) { /* Offline: bearer eventually expires. */ }
+            }
+        }
     }
 }
