@@ -74,6 +74,7 @@ import com.credisafe.mobile.domain.RuntimePermissionPolicy
 import com.credisafe.mobile.domain.XpEngine
 import com.credisafe.mobile.service.TelemetryForegroundService
 import com.credisafe.mobile.service.TripSession
+import com.credisafe.mobile.service.SyncWorker
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -438,6 +439,7 @@ private fun CrediSafeApp() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess: () -> Unit) {
+    val context = LocalContext.current
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -522,6 +524,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
                 scope.launch {
                     val res = auth.login(email, password)
                     if (res.isSuccess) {
+                        SyncWorker.enqueue(context)
                         onAuthSuccess()
                     } else {
                         val e = res.exceptionOrNull()
@@ -556,6 +559,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess: () -> Unit) {
+    val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -656,6 +660,7 @@ private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess
                 scope.launch {
                     val res = auth.login(email, password, name)
                     if (res.isSuccess) {
+                        SyncWorker.enqueue(context)
                         onAuthSuccess()
                     } else {
                         error = res.exceptionOrNull()?.message ?: "Registration failed"
