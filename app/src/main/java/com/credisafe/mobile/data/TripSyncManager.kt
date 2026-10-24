@@ -73,7 +73,12 @@ class TripSyncManager(context: Context) {
     }
 
     suspend fun syncPendingTrips(): Result<Int> {
-        val pending = db.getPendingTrips()
+        val userId = auth.getUserId()
+            ?: return Result.failure(IllegalStateException("Sign in to sync recorded journeys."))
+        if (!auth.hasSessionMaterial()) {
+            return Result.failure(IllegalStateException("Cloud session expired; sign in to sync journeys."))
+        }
+        val pending = db.getPendingTrips(userId)
         if (pending.isEmpty()) return Result.success(0)
 
         var syncedCount = 0
