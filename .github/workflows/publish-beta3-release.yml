@@ -1,0 +1,68 @@
+name: Publish Verified Android Beta 3 APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-beta3-release.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-verified-beta3:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: "v2.7.0-beta.3"
+      APK: "CrediSafe-2.7.0-beta.3.apk"
+      EXPECTED_SOURCE_SHA: "9aa08832b630f4e46b51f735e041d01a41674ec4"
+    steps:
+      - name: Verify signed build provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(gh api "/repos/$GH_REPO/actions/runs/40104272704" --jq '.head_sha')"
+          test "$SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
+          echo "Verified signed Android beta.3 build at $SOURCE_SHA"
+
+      - name: Download signed build artifacts from successful run
+        uses: actions/download-artifact@v4
+        with:
+          name: CrediSafe-2.7.0-beta.3
+          run-id: 40104272704
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          path: release-output
+
+      - name: Verify APK, AAB and SHA256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "release-output/$APK"
+          test -s "release-output/CrediSafe-2.7.0-beta.3.aab"
+          test -s release-output/SHA256SUMS.txt
+          ( cd release-output && sha256sum -c SHA256SUMS.txt )
+          echo "Signed APK and AAB integrity verified."
+
+      - name: Publish public prerelease with direct APK asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; verifying signed APK asset."
+            gh release view "$VERSION" --json assets --jq '.assets[].name' | grep -Fx "$APK"
+          else
+            gh release create "$VERSION" \
+              "release-output/$APK" \
+              "release-output/CrediSafe-2.7.0-beta.3.aab" \
+              "release-output/SHA256SUMS.txt" \
+              --target "$EXPECTED_SOURCE_SHA" \
+              --title "CrediSafe v2.7.0 Beta 3" \
+              --notes "Signed Android Beta 3 build from successful GitHub Actions run #40104272704. Improvements: rotating refresh sessions, more reliable cloud telemetry, safer offline trip synchronization. Install the APK over Beta 2 without uninstalling or clearing app data. Beta software: validate login, GPS, live streaming and journey sync on your device." \
+              --prerelease
+          fi
+          echo "Direct APK: https://github.com/$GH_REPO/releases/download/$VERSION/$APK"
