@@ -319,7 +319,17 @@ private fun CrediSafeApp() {
     val context = LocalContext.current
     val activity = context as MainActivity
     val auth = remember { AuthManager(context) }
-    var tab by remember { mutableStateOf(if (auth.getUserId() == null) Tab.AUTH else Tab.HOME) }
+    var tab by remember {
+        mutableStateOf(if (auth.getUserId() == null || !auth.hasSessionMaterial()) Tab.AUTH else Tab.HOME)
+    }
+    LaunchedEffect(Unit) {
+        if (auth.getUserId() != null && auth.getAuthToken() == null) {
+            // Refresh silently on launch, but preserve offline trip recording when the
+            // backend is temporarily unreachable.
+            auth.getValidAccessToken()
+            if (!auth.hasSessionMaterial()) tab = Tab.AUTH
+        }
+    }
     val telemetry by TripSession.state.collectAsState()
 
     activity.permissionPrompt?.let { prompt ->
@@ -370,13 +380,15 @@ private fun CrediSafeApp() {
                     },
                     actions = {
                         if (telemetry.active) {
+                            val cloudLive = telemetry.streamStatus == StreamStatus.LIVE
                             Row(
                                 modifier = Modifier.padding(end = 12.dp).background(Surface2, RoundedCornerShape(12.dp)).padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(Modifier.size(6.dp).background(Green, CircleShape))
+                                Box(Modifier.size(6.dp).background(if (cloudLive) Green else Warning, CircleShape))
                                 Spacer(Modifier.width(6.dp))
-                                Text("LIVE", color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                Text(if (cloudLive) "CLOUD LIVE" else "RECORDING",
+                                    color = White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     },
@@ -1374,7 +1386,7 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
 
         DiagnosticSection("GPS, Road & Mobility") {
             DataLine("GPS Quality", "%.2f".format(telemetry.gpsQuality))
-            DataLine("Accuracy", "${telemetry.gpsAccuracyM ?: 0.0} m")
+            DataLine("Accuracy", telemetry.gpsAccuracyM?.let { "%.1f m".format(it) } ?: "Waiting for GPS")
             DataLine("Activity", "${telemetry.mobility.activity.name} (${telemetry.mobility.confidence}%)")
             DataLine("Transport Mode", telemetry.transportMode.name)
             DataLine("Road Zone", telemetry.roadContext.zoneType.name)
@@ -1394,15 +1406,20 @@ private fun DiagnosticsScreen(modifier: Modifier, telemetry: LiveTelemetry, onBa
                 }
             }
             var backendHealth by remember { mutableStateOf("Checking...") }
+            var checkRevision by remember { mutableIntStateOf(0) }
             val syncManager = remember { com.credisafe.mobile.data.TripSyncManager(context) }
 
-            LaunchedEffect(Unit) {
+            LaunchedEffect(checkRevision) {
+                backendHealth = "Checking..."
                 backendHealth = if (syncManager.checkHealth()) "Connected" else "Unavailable"
             }
 
             DataLine("API Host", apiHost)
             DataLine("Backend Health", backendHealth)
             DataLine("Stream Status", telemetry.streamStatus.name)
+            OutlinedButton(onClick = { checkRevision++ }) {
+                Text("Retry backend connection")
+            }
         }
         Spacer(Modifier.height(20.dp))
     }
@@ -1598,6 +1615,7 @@ private fun ProfileScreen(
                 auth.logout()
                 onLogout()
             },
+            enabled = !telemetry.active,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Error),
             border = BorderStroke(1.dp, Surface3),
