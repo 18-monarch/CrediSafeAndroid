@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { AuthError, createSession } from '../auth/authService.js';
+import { AuthError, createSession, refreshSession, revokeSession } from '../auth/authService.js';
 import { authMiddleware, AuthRequest } from '../middleware/authMiddleware.js';
 import * as tripService from '../services/tripService.js';
 import * as telemetryService from '../services/telemetryService.js';
@@ -22,6 +22,29 @@ router.post('/auth/session', async (req, res) => {
       return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     }
     res.status(500).json({ error: { code: 'server_error', message: 'Authentication is temporarily unavailable.' } });
+  }
+});
+
+// 1b. Renewable sessions: tokens rotate and are bound to their device.
+router.post('/auth/refresh', async (req, res) => {
+  try {
+    const { deviceId, refreshToken } = req.body || {};
+    res.json(await refreshSession(deviceId, refreshToken));
+  } catch (err: any) {
+    if (err instanceof AuthError) {
+      return res.status(err.status).json({ error: { code: err.code, message: err.message } });
+    }
+    res.status(503).json({ error: { code: 'session_unavailable', message: 'Please try again later.' } });
+  }
+});
+
+router.post('/auth/logout', async (req, res) => {
+  try {
+    const { deviceId, refreshToken } = req.body || {};
+    await revokeSession(deviceId, refreshToken);
+    res.json({ success: true });
+  } catch {
+    res.status(503).json({ error: { code: 'session_unavailable', message: 'Please try again later.' } });
   }
 });
 
