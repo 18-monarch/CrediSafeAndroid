@@ -27,8 +27,11 @@ jobs:
           npm run test:unit
       - uses: android-actions/setup-android@v3
         with:
-          cmdline-tools-version: "15859902"
-      - run: android sdk install --canary platforms/android-37 build-tools/36.0.0
+          cmdline-tools-version: "11076708"
+      - name: Install Android 37 SDK and Build Tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --channel=3 "platforms;android-37" "build-tools;36.0.0"
       - name: Static verification
         run: python3 scripts/verify-distribution.py
       - run: chmod +x gradlew
