@@ -163,9 +163,10 @@ router.post('/sync/ack', authMiddleware, async (req: AuthRequest, res) => {
 });
 
 // 3. Live Dashboard (Internal/Partner)
-router.get('/live/dashboard', authMiddleware, async (req, res) => {
+router.get('/live/dashboard', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const trips = getLiveTrips();
+    // Never expose other drivers' real-time locations to a standard account.
+    const trips = getLiveTrips().filter(trip => trip.userId === req.userId);
     res.json(trips);
   } catch (err: any) {
     res.status(500).json({ error: { code: 'server_error', message: err.message } });
