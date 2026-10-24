@@ -320,18 +320,20 @@ private fun CrediSafeApp() {
     val context = LocalContext.current
     val activity = context as MainActivity
     val auth = remember { AuthManager(context) }
+    val telemetry by TripSession.state.collectAsState()
     var tab by remember {
-        mutableStateOf(if (auth.getUserId() == null || !auth.hasSessionMaterial()) Tab.AUTH else Tab.HOME)
+        mutableStateOf(
+            if (!telemetry.active && (auth.getUserId() == null || !auth.hasSessionMaterial()))
+                Tab.AUTH else Tab.HOME
+        )
     }
     LaunchedEffect(Unit) {
         if (auth.getUserId() != null && auth.getAuthToken() == null) {
-            // Refresh silently on launch, but preserve offline trip recording when the
-            // backend is temporarily unreachable.
+            // Retain access to Stop Journey while recording offline.
             auth.getValidAccessToken()
-            if (!auth.hasSessionMaterial()) tab = Tab.AUTH
+            if (!auth.hasSessionMaterial() && !TripSession.state.value.active) tab = Tab.AUTH
         }
     }
-    val telemetry by TripSession.state.collectAsState()
 
     activity.permissionPrompt?.let { prompt ->
         PermissionPromptDialog(
