@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
+import { issueRoadLimitProof } from '../../src/services/roadLimitProof.js';
+process.env.ROAD_LIMIT_PROOF_SECRET = 'unit-test-proof-signing-key-never-used-in-production';
 import {
   SAFETY_RULESET_V2, decodeTelemetryV2, corroborateSafetyV2,
   type TelemetrySampleV2,
@@ -8,6 +10,7 @@ import {
 
 const start = Date.parse('2026-10-24T08:00:00.000Z');
 const trip = {
+  user_id: 'test-driver-id',
   started_at: new Date(start),
   ended_at: new Date(start + 9000),
   telemetry_quality: 0.95,
@@ -30,6 +33,17 @@ function samples(acceleration = 0, speed = 35): TelemetrySampleV2[] {
 function event(type: string, index = 34) {
   return { timestamp_ms: start + index * 100, event_type: type, confidence: .85, speed_kmh: 35 };
 }
+function speedEvent(type = 'OVERSPEED_MINOR', index = 34, limit = 50) {
+  const issuedAt = start + index * 100 - 1000;
+  const proof = issueRoadLimitProof({
+    u: trip.user_id, w: 'osm-way-123456', l: limit, t: issuedAt,
+  });
+  return {
+    ...event(type, index),
+    speed_kmh: 62,
+    detail: `Speed exceeded trusted limit;roadProof=${proof}`,
+  };
+}
 describe('Safety Rules v2 proof-based scoring', () => {
   it('treats a client-provided high score as irrelevant and scores only evidence', () => {
     const out = corroborateSafetyV2({ ...trip, safety_score: 100 }, [event('HARSH_BRAKING')], samples(-4));
@@ -51,16 +65,36 @@ describe('Safety Rules v2 proof-based scoring', () => {
     assert.equal(out.uncorroboratedEvents, 1);
   });
 
-  it('ignores speeding without trusted road context', () => {
+  it('ignores speeding with no authenticated per-event map evidence', () => {
     const eventAtSpeed = { ...event('OVERSPEED_MINOR'), speed_kmh: 62 };
-    const out = corroborateSafetyV2({ ...trip, road_context_source: 'NONE' }, [eventAtSpeed], samples(0, 62));
+    const out = corroborateSafetyV2(trip, [eventAtSpeed], samples(0, 62));
     assert.equal(out.score, 100);
   });
 
-  it('confirms speeding with trusted road and corroborated sensor speed', () => {
-    const eventAtSpeed = { ...event('OVERSPEED_MINOR'), speed_kmh: 62 };
+  it('confirms speeding with a signed per-road proof and corroborating GPS speed', () => {
+    const eventAtSpeed = speedEvent();
     const out = corroborateSafetyV2(trip, [eventAtSpeed], samples(0, 62));
     assert.equal(out.score, 96);
+  });
+
+  it('road changes do not change the limit used for earlier events', () => {
+    const eventAtSpeed = speedEvent('OVERSPEED_MINOR', 34, 50);
+    const out = corroborateSafetyV2(
+      { ...trip, road_speed_limit_kmh: 110, road_context_source: 'NONE' },
+      [eventAtSpeed],
+      samples(0, 62),
+    );
+    assert.equal(out.score, 96);
+  });
+
+  it('refuses fake proof, proof from another user or wrong limit', () => {
+    const valid = speedEvent();
+    assert.equal(corroborateSafetyV2(
+      { ...trip, user_id: 'someone-else' }, [valid], samples(0, 62),
+    ).score, 100);
+    assert.equal(corroborateSafetyV2(
+      trip, [{ ...valid, detail: valid.detail + 'tampered' }], samples(0, 62),
+    ).score, 100);
   });
 
   it('rejects timeline mismatch', () => {

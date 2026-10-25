@@ -5,6 +5,7 @@ import * as tripService from '../services/tripService.js';
 import * as telemetryService from '../services/telemetryService.js';
 import db from '../db/knex.js';
 import { getRoadContext } from '../services/roadContextService.js';
+import { issueRoadLimitProof } from '../services/roadLimitProof.js';
 
 import { getLiveTrips, updateLiveTrip } from '../sync/liveStore.js';
 
@@ -150,7 +151,25 @@ router.post('/road/context', authMiddleware, async (req: AuthRequest, res) => {
       previousLongitude: typeof previousLongitude === 'number' && Number.isFinite(previousLongitude) ? previousLongitude : undefined,
       accuracyM: typeof accuracyM === 'number' && Number.isFinite(accuracyM) ? accuracyM : undefined,
     });
-    res.json(context);
+    // Tie speed-limit evidence to the authenticated user and exact matched
+    // road. The Android app carries this proof with speeding events so the
+    // scoring engine never uses the *last road's* limit for an earlier event.
+    const proof = context.speedLimitTrusted && context.speedLimitKmh != null &&
+      context.placeId && req.userId
+      ? issueRoadLimitProof({
+          u: req.userId,
+          w: context.placeId,
+          l: context.speedLimitKmh,
+          t: Date.now(),
+        })
+      : null;
+    if (context.speedLimitTrusted && !proof) {
+      return res.json({
+        ...context, speedLimitTrusted: false, source: 'VALHALLA_OSM',
+        roadProof: null,
+      });
+    }
+    res.json({ ...context, roadProof: proof });
   } catch {
     res.status(502).json({
       error: { code: 'road_context_unavailable', message: 'Road context is temporarily unavailable' }

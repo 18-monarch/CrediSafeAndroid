@@ -109,6 +109,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     @Volatile private var currentRoadContext = RoadContext()
     private var lastRoadContextLookupTs = 0L
     private var lastRoadContextLookupLocation: Location? = null
+    @Volatile private var roadContextRequestSequence = 0L
     @Volatile private var roadProviderSamples = 0
     @Volatile private var roadMatchedSamples = 0
     private val zoneAccumulator = ZoneProfileAccumulator()
@@ -222,6 +223,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         currentRoadContext = RoadContext()
         lastRoadContextLookupTs = 0L
         lastRoadContextLookupLocation = null
+        roadContextRequestSequence = 0L
         roadProviderSamples = 0
         roadMatchedSamples = 0
         latestMobilityDecision = MobilityDecision.unknown()
@@ -354,39 +356,61 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     }
 
     private fun refreshRoadContext(location: Location, speedKmh: Double) {
+        // Valhalla map matching needs two points. Initialize the first without
+        // issuing an unusable single-point API request.
+        val previous = lastRoadContextLookupLocation
+        if (previous == null) {
+            lastRoadContextLookupLocation = Location(location)
+            return
+        }
         val now = System.currentTimeMillis()
         val elapsed = if (lastRoadContextLookupTs > 0L) now - lastRoadContextLookupTs else Long.MAX_VALUE
-        val movedM = lastRoadContextLookupLocation?.distanceTo(location)?.toDouble() ?: Double.POSITIVE_INFINITY
-
+        val movedM = previous.distanceTo(location).toDouble()
+        val firstValidSegment = lastRoadContextLookupTs == 0L &&
+            movedM >= ROAD_CONTEXT_INITIAL_SEGMENT_M
         val trustedLimitNeedsRefresh =
             currentRoadContext.speedLimitTrusted && elapsed >= TRUSTED_LIMIT_REFRESH_MS
         val movedEnough =
             elapsed >= ROAD_CONTEXT_MIN_REFRESH_MS && movedM >= ROAD_CONTEXT_MIN_DISTANCE_M
         val maxAgeReached = elapsed >= ROAD_CONTEXT_MAX_REFRESH_MS
 
-        if (!trustedLimitNeedsRefresh && !movedEnough && !maxAgeReached) return
+        if (!firstValidSegment && !trustedLimitNeedsRefresh && !movedEnough && !maxAgeReached) return
+        if (!location.hasAccuracy() || location.accuracy > ROAD_CONTEXT_MAX_GPS_ACCURACY_M) {
+            // Never perpetuate a possibly wrong speed limit with invalid GPS.
+            currentRoadContext = RoadContext()
+            return
+        }
 
-        val previousLookup = lastRoadContextLookupLocation?.let(::Location)
+        val previousLookup = Location(previous)
+        val requestTrip = tripId
+        val requestSequence = ++roadContextRequestSequence
         lastRoadContextLookupTs = now
         lastRoadContextLookupLocation = Location(location)
+        // A road transition may change the speed limit. Avoid applying a
+        // previous segment's limit while awaiting an updated map match.
+        currentRoadContext = RoadContext()
 
         serviceScope.launch {
             val context = roadContextRepository.lookup(
                 latitude = location.latitude,
                 longitude = location.longitude,
-                previousLatitude = previousLookup?.latitude,
-                previousLongitude = previousLookup?.longitude,
-                accuracyM = location.accuracy.takeIf { location.hasAccuracy() }?.toDouble(),
+                previousLatitude = previousLookup.latitude,
+                previousLongitude = previousLookup.longitude,
+                accuracyM = location.accuracy.toDouble(),
                 speedKmh = speedKmh,
                 bearing = location.bearing.takeIf { location.hasBearing() }?.toDouble(),
             )
-            if (context != null && tripId != null) {
-                currentRoadContext = context
-                if (context.providerAvailable) {
+            // Out-of-order replies from a slow map server must not overwrite a
+            // newer road's speed limit or leak across journeys.
+            if (requestTrip != null && tripId == requestTrip &&
+                requestSequence == roadContextRequestSequence
+            ) {
+                currentRoadContext = context ?: RoadContext()
+                if (context?.providerAvailable == true) {
                     roadProviderSamples++
                     if (context.roadMatched) roadMatchedSamples++
+                    zoneAccumulator.add(context)
                 }
-                zoneAccumulator.add(context)
             }
         }
     }
@@ -404,7 +428,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 EventSeverity.HIGH,
                 0.97,
                 speedKmh,
-                decision.detail,
+                decision.detail + (currentRoadContext.roadProof?.let { ";roadProof=$it" } ?: ""),
                 timestampMs,
             )
             OverspeedLevel.MINOR -> emit(
@@ -413,7 +437,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 EventSeverity.MEDIUM,
                 0.92,
                 speedKmh,
-                decision.detail,
+                decision.detail + (currentRoadContext.roadProof?.let { ";roadProof=$it" } ?: ""),
                 timestampMs,
             )
             OverspeedLevel.NONE -> Unit
@@ -986,9 +1010,11 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         const val EXTRA_VEHICLE_ID = "vehicle_id"
         const val CHANNEL = "credisafe"
         const val NOTIFICATION_ID = 11
-        const val TRUSTED_LIMIT_REFRESH_MS = 30_000L
-        const val ROAD_CONTEXT_MIN_REFRESH_MS = 60_000L
-        const val ROAD_CONTEXT_MAX_REFRESH_MS = 180_000L
-        const val ROAD_CONTEXT_MIN_DISTANCE_M = 1_000.0
+        const val TRUSTED_LIMIT_REFRESH_MS = 15_000L
+        const val ROAD_CONTEXT_MIN_REFRESH_MS = 10_000L
+        const val ROAD_CONTEXT_MAX_REFRESH_MS = 30_000L
+        const val ROAD_CONTEXT_MIN_DISTANCE_M = 100.0
+        const val ROAD_CONTEXT_INITIAL_SEGMENT_M = 10.0
+        const val ROAD_CONTEXT_MAX_GPS_ACCURACY_M = 30.0f
     }
 }

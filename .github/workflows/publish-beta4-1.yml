@@ -1,0 +1,173 @@
+name: Publish Signed Beta 4.1 Road Limits Hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-beta4-1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: signed-beta4-1-road-limits
+  cancel-in-progress: false
+
+jobs:
+  beta4_hotfix:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: '2.7.0-beta.4.1'
+      CODE: '29'
+      APK: 'CrediSafe-2.7.0-beta.4.1.apk'
+      AAB: 'CrediSafe-2.7.0-beta.4.1.aab'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require exact beta4.1 release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fx 'CREDISAFE_VERSION_CODE=29' gradle.properties
+          grep -Fx 'CREDISAFE_VERSION_NAME=2.7.0-beta.4.1' gradle.properties
+          test -f backend/src/services/safetyRulesV2.ts
+          test -f app/src/main/java/com/credisafe/mobile/domain/MotionEventDetectorV2.kt
+          test -f app/src/main/java/com/credisafe/mobile/domain/SustainedOverspeedDetectorV2.kt
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::The v$VERSION release already exists. Do not replace a signed release."
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Backend typecheck, tests and security audit
+        working-directory: backend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run test:unit
+          npm audit --omit=dev
+
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '15859902'
+          packages: 'platform-tools'
+      - name: Install Android SDK
+        run: android sdk install --canary platforms/android-37 build-tools/36.0.0
+
+      - name: Verify distribution and release invariants
+        run: python3 scripts/verify-distribution.py
+
+      - name: Require original signing secrets
+        env:
+          BETA_KEYSTORE_BASE64: ${{ secrets.BETA_KEYSTORE_BASE64 }}
+          BETA_STORE_PASSWORD: ${{ secrets.BETA_STORE_PASSWORD }}
+          BETA_KEY_ALIAS: ${{ secrets.BETA_KEY_ALIAS }}
+          BETA_KEY_PASSWORD: ${{ secrets.BETA_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BETA_KEYSTORE_BASE64"
+          test -n "$BETA_STORE_PASSWORD"
+          test -n "$BETA_KEY_ALIAS"
+          test -n "$BETA_KEY_PASSWORD"
+          mkdir -p .signing
+          printf '%s' "$BETA_KEYSTORE_BASE64" | base64 --decode > .signing/credisafe-beta.keystore
+          printf 'storeFile=.signing/credisafe-beta.keystore\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$BETA_STORE_PASSWORD" "$BETA_KEY_ALIAS" "$BETA_KEY_PASSWORD" > signing.properties
+          chmod 600 signing.properties .signing/credisafe-beta.keystore
+
+      - name: Point signed Android build to official backend
+        run: |
+          printf '%s\n' \
+            'CREDISAFE_API_DEBUG_URL=https://credisafeandroid.onrender.com/v1/' \
+            'CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/' \
+            > local.properties
+
+      - name: Run Android unit tests and produce signed APK + AAB
+        run: |
+          chmod +x gradlew
+          ./gradlew clean test assembleRelease bundleRelease
+          mkdir -p release-output reference-beta3
+          cp app/build/outputs/apk/release/app-release.apk "release-output/$APK"
+          cp app/build/outputs/bundle/release/app-release.aab "release-output/$AAB"
+
+      - name: Verify Android package, version and signing continuity
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$TOOLS/apksigner" verify --verbose --print-certs "release-output/$APK"
+          BADGING="$("$TOOLS/aapt" dump badging "release-output/$APK" | grep '^package:')"
+          echo "$BADGING"
+          [[ "$BADGING" == *"name='com.credisafe.mobile'"* ]]
+          [[ "$BADGING" == *"versionCode='29'"* ]]
+          [[ "$BADGING" == *"versionName='2.7.0-beta.4.1'"* ]]
+          gh release download v2.7.0-beta.4 \
+            --pattern 'CrediSafe-2.7.0-beta.4.apk' --dir reference-beta3
+          OLD="$("$TOOLS/apksigner" verify --print-certs reference-beta3/CrediSafe-2.7.0-beta.4.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
+          NEW="$("$TOOLS/apksigner" verify --print-certs "release-output/$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
+          test -n "$OLD"
+          test -n "$NEW"
+          test "$OLD" = "$NEW"
+          echo "Same certificate as published Beta 4: VERIFIED"
+
+      - name: Generate checksums and verify archive integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ( cd release-output && sha256sum "$APK" "$AAB" > SHA256SUMS.txt && sha256sum -c SHA256SUMS.txt )
+
+      - name: Upload signed build for QA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrediSafe-2.7.0-beta.4.1
+          path: release-output/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish public Beta 4.1 testing prerelease with direct APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'EOF'
+          # CrediSafe v2.7.0 Beta 4.1 — Automatic Map Speed Limits Hotfix
+
+          This is a **testing prerelease**. Automatic posted-map limits are not authoritative traffic-law determinations.
+
+          ## What's new
+          - Automatically matches GPS movement to OSM roads via Valhalla
+          - Uses only mapped tagged speed limits with high-confidence road/GPS evidence
+          - Automatically refreshes limits as roads change; no manually entered universal limit
+          - Signed, time-limited road evidence attaches to each speeding event for backend verification
+          - Missing/untrusted limits do NOT trigger penalties
+          - Existing offline recording, evidence-backed XP and account compatibility remain
+          - Same Android package and signing certificate as Beta 4
+
+          ## Important
+          - Update over Beta 4; **do not uninstall or clear storage**.
+          - Use only in a consented, controlled pilot; never interact with the phone while driving.
+          - Map data may be missing, outdated or incorrect. Accuracy is **not** established by unit tests.
+          - Report any login, trip recording, cloud synchronization, or scoring problem.
+          - Previous Beta 4 remains on GitHub Releases as a download fallback.
+          EOF
+          gh release create "v$VERSION" \
+            "release-output/$APK" \
+            "release-output/$AAB" \
+            release-output/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "CrediSafe v2.7.0 Beta 4.1 — Automatic Map Speed Limits" \
+            --notes-file RELEASE_NOTES.md \
+            --prerelease
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$APK"

@@ -41,6 +41,31 @@ export function boundedNumber(value: unknown, min: number, max: number): number 
   return Number.isFinite(number) && number >= min && number <= max ? number : null;
 }
 
+/**
+ * Valhalla's "speed" can be inferred from road class or traffic and must
+ * never be used as a legal speed limit. We consume "speed_limit" only, and
+ * authorize auto trust only when graph metadata identifies OSM-tagged speed.
+ *
+ * "Tagged" is evidence of a map tag, NOT independent legal verification.
+ * The provider must be explicitly enabled by deployment configuration.
+ */
+export function selectMappedSpeedLimit(
+  edge: any,
+  matchDistanceM: number | null,
+  accuracyM: number | null,
+  providerAllowed: boolean,
+): { speedLimitKmh: number | null; trusted: boolean } {
+  const speedLimitKmh = boundedNumber(edge?.speed_limit, 10, 140);
+  const tagged = String(edge?.speed_type || '').toLowerCase() === 'tagged';
+  const reliableGps = accuracyM != null && accuracyM > 0 && accuracyM <= 20;
+  const closeRoadMatch = matchDistanceM != null && matchDistanceM <= 15;
+  return {
+    speedLimitKmh,
+    trusted: Boolean(providerAllowed && tagged && speedLimitKmh != null &&
+      reliableGps && closeRoadMatch),
+  };
+}
+
 export function zoneFor(edge: any): RoadContextResult['zoneType'] {
   const roadClass = String(edge?.road_class || '').toLowerCase();
   const use = String(edge?.use || '').toLowerCase();
@@ -118,7 +143,7 @@ export async function getRoadContext(query: RoadContextQuery): Promise<RoadConte
           action: 'include',
           attributes: [
             'edge.names', 'edge.road_class', 'edge.use', 'edge.way_id',
-            'edge.speed_limit', 'matched.point', 'matched.type',
+            'edge.speed_limit', 'edge.speed_type', 'matched.point', 'matched.type',
             'matched.edge_index', 'matched.distance_from_trace_point',
             'admin.country_text', 'admin.state_text',
           ],
@@ -152,8 +177,14 @@ export async function getRoadContext(query: RoadContextQuery): Promise<RoadConte
       : distanceFromTrace <= 10 ? 0.94
       : distanceFromTrace <= 25 ? 0.86
       : distanceFromTrace <= 50 ? 0.72 : 0.58;
-    const speedLimitKmh = boundedNumber(edge.speed_limit, 5, 160);
-    const speedLimitTrusted = speedLimitKmh != null && process.env.VALHALLA_SPEED_LIMITS_TRUSTED === 'true';
+    const mappedLimit = selectMappedSpeedLimit(
+      edge,
+      distanceFromTrace,
+      boundedNumber(query.accuracyM, 1, 100),
+      process.env.VALHALLA_SPEED_LIMITS_TRUSTED === 'true',
+    );
+    const speedLimitKmh = mappedLimit.speedLimitKmh;
+    const speedLimitTrusted = mappedLimit.trusted && confidence >= 0.86;
     const admin = Array.isArray(response.data?.admins) ? response.data.admins[0] : null;
     const jurisdiction = [admin?.state_text, admin?.country_text].filter(Boolean).join(', ') || null;
     const wayId = edge.way_id == null ? null : String(edge.way_id);

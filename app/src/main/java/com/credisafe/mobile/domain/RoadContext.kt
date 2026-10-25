@@ -23,6 +23,7 @@ data class RoadContext(
     val jurisdiction: String? = null,
     val speedLimitKmh: Double? = null,
     val speedLimitTrusted: Boolean = false,
+    val roadProof: String? = null,
     val confidence: Double = 0.0,
     val source: RoadContextSource = RoadContextSource.NONE,
     val snappedLatitude: Double? = null,
