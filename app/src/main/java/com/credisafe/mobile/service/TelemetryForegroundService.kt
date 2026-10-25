@@ -428,7 +428,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 EventSeverity.HIGH,
                 0.97,
                 speedKmh,
-                decision.detail,
+                decision.detail + (currentRoadContext.roadProof?.let { ";roadProof=$it" } ?: ""),
                 timestampMs,
             )
             OverspeedLevel.MINOR -> emit(
@@ -437,7 +437,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
                 EventSeverity.MEDIUM,
                 0.92,
                 speedKmh,
-                decision.detail,
+                decision.detail + (currentRoadContext.roadProof?.let { ";roadProof=$it" } ?: ""),
                 timestampMs,
             )
             OverspeedLevel.NONE -> Unit
