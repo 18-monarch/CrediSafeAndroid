@@ -237,14 +237,18 @@ export async function completeTrip(tripId: string, userId: string) {
     const telemetryAsset = await trx('telemetry_assets').where({ trip_id: tripId }).first();
     const evidenceSamples = decodeTelemetryV2(telemetryAsset || {});
     const verifiedSafety = corroborateSafetyV2(trip, events, evidenceSamples);
+    // No motion/orientation evidence must never be mistaken for flawless
+    // driving simply because no harsh-motion events were detected.
+    const insufficientEvidence =
+      verifiedSafety.gpsQuality < 0.45 ||
+      verifiedSafety.telemetryQuality < 0.60 ||
+      verifiedSafety.motionCoverage < 0.60;
     const checkedTrip = {
       ...trip,
       telemetry_quality: verifiedSafety.telemetryQuality,
-      trip_classification: (verifiedSafety.gpsQuality < 0.45 ||
-        verifiedSafety.telemetryQuality < 0.60) ? 'SUSPICIOUS' : trip.trip_classification,
-      eligibility_reason: (verifiedSafety.gpsQuality < 0.45 ||
-        verifiedSafety.telemetryQuality < 0.60)
-        ? 'Insufficient reliable telemetry for confirmed driving rewards.'
+      trip_classification: insufficientEvidence ? 'SUSPICIOUS' : trip.trip_classification,
+      eligibility_reason: insufficientEvidence
+        ? 'Insufficient reliable GPS, sensor sampling, or phone orientation evidence for confirmed driving rewards.'
         : trip.eligibility_reason,
     };
     const checkedMetrics = {
