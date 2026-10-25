@@ -26,6 +26,7 @@ export interface VerifiedSafetyV2 {
   score: number;
   gpsQuality: number;
   telemetryQuality: number;
+  motionCoverage: number;
   confirmedEvents: number;
   uncorroboratedEvents: number;
   penalties: Record<string, number>;
@@ -200,6 +201,7 @@ export function corroborateSafetyV2(
     score: Math.max(0, 100 - Object.values(penalties).reduce((sum, n) => sum + n, 0)),
     gpsQuality,
     telemetryQuality,
+    motionCoverage: motionQuality,
     confirmedEvents,
     uncorroboratedEvents,
     penalties,
