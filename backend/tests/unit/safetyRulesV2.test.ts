@@ -77,6 +77,17 @@ describe('Safety Rules v2 proof-based scoring', () => {
     assert.ok(out.telemetryQuality < 0.95);
   });
 
+  it('reports missing motion orientation evidence separately from apparent clean driving', () => {
+    const noOrientation = samples().map(sample => ({
+      ...sample, rx: null, ry: null, rz: null,
+    }));
+    const result = corroborateSafetyV2(trip, [], noOrientation);
+    assert.equal(result.score, 100);
+    assert.equal(result.motionCoverage, 0);
+    // The trip-completion gate must mark this unobservable journey ineligible.
+    assert.ok(result.motionCoverage < 0.60);
+  });
+
   it('rejects absent telemetry and accepts valid gzip samples', () => {
     assert.throws(() => decodeTelemetryV2({}), /upload required/);
     const saved = samples();
