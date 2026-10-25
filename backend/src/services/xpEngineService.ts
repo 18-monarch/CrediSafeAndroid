@@ -156,6 +156,7 @@ export function evaluateXpDecision(
   dailyXpEarnedSoFar: number,
   dailyCompletionAwardsSoFar: number,
   weeklyXpEarnedSoFar: number,
+  verifiedSafetyScore?: number,
 ): XpDecision {
   const tripId = String(trip.id || '');
   const distanceM = safeNumber(trip.distance_m);
@@ -221,7 +222,12 @@ export function evaluateXpDecision(
     ineligibilityReasons.push('Telemetry integrity checks flagged anomalies (mock location, impossible speed, or GPS jumps).');
   }
 
-  const serverSafetyScore = reconstructServerSafetyScore(trip, metrics, events);
+  // v2 callers provide a score rebuilt from stored telemetry evidence.
+  // Omitted argument retains legacy XP_RULESET_V1 golden vectors unchanged.
+  const serverSafetyScore =
+    verifiedSafetyScore != null && Number.isFinite(verifiedSafetyScore)
+      ? clamp(verifiedSafetyScore, 0, 100)
+      : reconstructServerSafetyScore(trip, metrics, events);
 
   // If ineligible or requiring review:
   if (ineligibilityReasons.length > 0) {
