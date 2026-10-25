@@ -635,13 +635,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             maxSpeedKmh = if (invalidSpeedSamples > 0) TelematicsConfig.MAX_REASONABLE_SPEED_KMH + 1.0 else maxSpeedKmh
         )
 
-        val score = SafetyEngine.score(
-            events.groupingBy { it.type }.eachCount(),
-            gpsQuality,
-            distanceM,
-            quality.overall,
-            suspiciousJumps.coerceAtMost(5),
-        )
+        val score = SafetyEngine.scoreV2(events.groupingBy { it.type }.eachCount())
 
         val liveMobility = MobilityContextStore.state.value
             .takeIf { it.isFresh(System.currentTimeMillis()) }
@@ -795,13 +789,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             nowMs = endedAt,
         )
 
-        val score = SafetyEngine.score(
-            events.groupingBy { it.type }.eachCount(),
-            gpsQuality,
-            distanceM,
-            telemetryQuality,
-            suspiciousJumps.coerceAtMost(5),
-        )
+        val score = SafetyEngine.scoreV2(events.groupingBy { it.type }.eachCount())
 
         val firstTripOfDay = validity.eligible && !db.hasCompletedTripOnDate(endedAt)
         val streakDays = if (firstTripOfDay) db.previousStreakDays(endedAt) + 1 else 1
@@ -818,6 +806,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             distanceM = distanceM,
             durationMs = elapsed,
             gpsQuality = gpsQuality,
+            telemetryQuality = telemetryQuality,
             events = events,
             streakDays = streakDays,
             firstTripOfDay = firstTripOfDay,
