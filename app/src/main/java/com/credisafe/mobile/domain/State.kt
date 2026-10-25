@@ -68,6 +68,21 @@ data class CompatibilityIssue(
 enum class IssueLevel { CRITICAL, WARNING, INFO }
 
 object SafetyEngine {
+    /**
+     * Rules v2 LOCAL estimate only. Measurement quality is a separate grade
+     * and must never be deducted as if it were unsafe driving behaviour.
+     * Cloud results come from independently corroborated uploaded evidence.
+     */
+    fun scoreV2(counts: Map<EventType, Int>): Int {
+        var score = 100
+        score -= counts.getOrDefault(EventType.OVERSPEED_MINOR, 0) * 4
+        score -= counts.getOrDefault(EventType.OVERSPEED_MAJOR, 0) * 9
+        score -= counts.getOrDefault(EventType.HARSH_BRAKING, 0) * 7
+        score -= counts.getOrDefault(EventType.HARSH_ACCELERATION, 0) * 5
+        score -= counts.getOrDefault(EventType.AGGRESSIVE_CORNERING, 0) * 6
+        return score.coerceIn(0, 100)
+    }
+
     fun score(
         counts: Map<EventType, Int>,
         gpsQuality: Double,
