@@ -18,7 +18,7 @@ accuracy or funding claims.
    suppress event confirmation. The existing 8-second cooldown prevents duplicate
    alerts. Orientation requirements can exclude real events and must be measured.
 3. GPS readings outside the plausible speed range are flagged *before* any clamp
-   and cannot generate overspeed penalties.
+   and cannot generate overspeed penalties. A fresh trusted speed limit and **3 seconds of sustained speeding** are required before an overspeed event can be emitted.
 4. The LOCAL behaviour score uses confirmed event counts only. Data quality remains
    a separate value, not an unsafe-driving penalty.
 5. WorkManager still uploads trip, events, compressed raw samples and completion
@@ -40,6 +40,7 @@ accuracy or funding claims.
 | Motion candidate dwell | 350 ms |
 | Maximum sample gap | 500 ms |
 | Same-type event cooldown | 8 seconds |
+| Sustained speeding evidence | 3 seconds of a fresh trusted road limit |
 | Harsh braking | <= -2.5 m/s2 |
 | Harsh acceleration | >= +2.7 m/s2 |
 | Cornering | >= 3.5 m/s2 lateral and >= 25 km/h |
