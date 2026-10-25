@@ -13,7 +13,7 @@ jobs:
   build-beta:
     # Beta 4 has its own verified-pilot release workflow; avoid a second
     # tag-triggered signer racing with its already-published prerelease.
-    if: github.ref != 'refs/tags/v2.7.0-beta.4'
+    if: github.ref != 'refs/tags/v2.7.0-beta.4' && github.ref != 'refs/tags/v2.7.0-beta.4.1'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
