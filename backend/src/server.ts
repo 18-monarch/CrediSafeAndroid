@@ -8,6 +8,7 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import db from './db/knex.js';
 import v1Router from './api/v1.js';
+import { internalAdminRouter } from './api/internalAdmin.js';
 import { verifyToken } from './auth/authService.js';
 import { updateLiveTrip, endLiveTrip } from './sync/liveStore.js';
 
@@ -49,6 +50,7 @@ app.get('/health', async (req, res) => {
   }
 });
 
+app.use('/v1/internal', rateLimit({ windowMs: 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false }), internalAdminRouter);
 app.use('/v1', v1Router);
 
 // WebSocket Server
