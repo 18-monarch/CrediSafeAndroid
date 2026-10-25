@@ -29,8 +29,9 @@ accuracy or funding claims.
 7. The v2 server score starts at **100 once**, independent of any client-uploaded score.
    XP_RULESET_V1 caps and ledger idempotency are retained for backward compatibility.
 8. A trip with server-measured GPS quality below 0.45 or telemetry quality below 0.60
-   is marked REVIEW/INELIGIBLE for monetary-risk-free virtual rewards. This is a
-   pilot criterion, not a scientifically proven dividing line.
+   or adequate motion/orientation coverage is missing (<0.60), the journey is
+   marked REVIEW/INELIGIBLE for virtual rewards. These are pilot criteria,
+   not scientifically proven dividing lines.
 
 ## Initial pilot-only settings
 
@@ -50,6 +51,7 @@ accuracy or funding claims.
 | Min uploaded samples | 10 |
 | Confirmed pilot GPS quality | >= 0.45 |
 | Confirmed pilot telemetry quality | >= 0.60 |
+| Motion/orientation sample coverage | >= 0.60 |
 
 The thresholds are calibration hypotheses. **They are not crash-risk, legal compliance,
 insurance or traffic-violation determinations.**
