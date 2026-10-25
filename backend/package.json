@@ -1,6 +1,6 @@
 {
   "name": "backend",
-  "version": "2.7.0-beta.1",
+  "version": "2.7.0-beta.4",
   "description": "CrediSafe Backend",
   "type": "module",
   "main": "src/server.ts",
