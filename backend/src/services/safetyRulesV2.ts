@@ -1,4 +1,5 @@
 import { gunzipSync } from 'node:zlib';
+import { proofFromEventDetail, verifyRoadLimitProof } from './roadLimitProof.js';
 
 /**
  * Rules v2 pilot: deterministic, explainable corroboration against stored
@@ -92,12 +93,14 @@ export function corroborateSafetyV2(
     road_context_confidence?: unknown;
     road_context_source?: string;
     telemetry_quality?: unknown;
+    user_id?: string;
   },
   events: Array<{
     timestamp_ms: number;
     event_type: string;
     confidence?: unknown;
     speed_kmh?: unknown;
+    detail?: unknown;
   }>,
   samples: TelemetrySampleV2[],
 ): VerifiedSafetyV2 {
@@ -157,11 +160,15 @@ export function corroborateSafetyV2(
     seen.add(bucket);
 
     const isSpeed = type.startsWith('OVERSPEED_');
-    const trustedLimit = numeric(trip.road_speed_limit_kmh);
-    const trustedRoad = trip.road_context_source === 'VALHALLA_OSM_SPEED_LIMIT' &&
-      (numeric(trip.road_context_confidence) ?? 0) >= .70;
+    // A journey can traverse many roads. Never use the final road's limit
+    // to judge a speeding event that happened earlier in the journey.
+    // Only backend-issued, user-bound and time-bound road proof qualifies.
+    const roadProof = isSpeed
+      ? verifyRoadLimitProof(proofFromEventDetail(event.detail), trip.user_id || '', ts)
+      : null;
+    const trustedLimit = roadProof?.l ?? null;
     const excess = type === 'OVERSPEED_MAJOR' ? 20 : 5;
-    if (isSpeed && (!trustedRoad || trustedLimit == null || trustedLimit <= 0 ||
+    if (isSpeed && (trustedLimit == null ||
         (numeric(event.speed_kmh) ?? 0) < trustedLimit + excess)) {
       uncorroboratedEvents++;
       continue;
