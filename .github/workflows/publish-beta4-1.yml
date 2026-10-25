@@ -1,21 +1,21 @@
-name: Publish Signed Beta 4.1.1 Road Limits Hotfix
+name: Publish Signed Beta 4.1 Road Limits Hotfix
 
 on:
   push:
     branches: [main]
     paths:
-      - '.github/workflows/publish-beta4.1-1.yml'
+      - '.github/workflows/publish-beta4-1.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: signed-beta4.1-1-road-limits
+  group: signed-beta4-1-road-limits
   cancel-in-progress: false
 
 jobs:
-  beta4.1:
+  beta4_hotfix:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fx 'CREDISAFE_VERSION_CODE=28' gradle.properties
+          grep -Fx 'CREDISAFE_VERSION_CODE=29' gradle.properties
           grep -Fx 'CREDISAFE_VERSION_NAME=2.7.0-beta.4.1' gradle.properties
           test -f backend/src/services/safetyRulesV2.ts
           test -f app/src/main/java/com/credisafe/mobile/domain/MotionEventDetectorV2.kt
