@@ -35,6 +35,8 @@ import com.credisafe.mobile.domain.SafetyEngine
 import com.credisafe.mobile.domain.TelematicsConfig
 import com.credisafe.mobile.domain.TelematicsQuality
 import com.credisafe.mobile.domain.TelemetryMath
+import com.credisafe.mobile.domain.MotionEventDetectorV2
+import com.credisafe.mobile.domain.MotionKind
 import com.credisafe.mobile.domain.LatLngPoint
 import com.credisafe.mobile.domain.MobilityAccumulator
 import com.credisafe.mobile.domain.MobilityDecision
@@ -94,6 +96,9 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     private var gpsQualitySum = 0.0
     private var gpsSamples = 0
     private var sensorSamples = 0L
+    private var rawLinearSensorSamples = 0L
+    private var invalidSpeedSamples = 0
+    private val motionDetectorV2 = MotionEventDetectorV2()
     private var locationSamples = 0L
     private var suspiciousJumps = 0
     private var mockLocationCount = 0
@@ -204,6 +209,9 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         gpsQualitySum = 0.0
         gpsSamples = 0
         sensorSamples = 0
+        rawLinearSensorSamples = 0L
+        invalidSpeedSamples = 0
+        motionDetectorV2.reset()
         locationSamples = 0
         suspiciousJumps = 0
         mockLocationCount = 0
@@ -294,11 +302,13 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             mockLocationCount++
             emit(id, EventType.TELEMETRY_ANOMALY, EventSeverity.HIGH, 1.0, 0.0, "Mock location detected.", location.time)
         }
-        val speedKmh = if (location.hasSpeed()) {
-            (location.speed * 3.6).coerceIn(0.0, TelematicsConfig.MAX_REASONABLE_SPEED_KMH)
-        } else {
-            0.0
-        }
+        val rawSpeedKmh = if (location.hasSpeed()) location.speed * 3.6 else 0.0
+        val invalidSpeed = !rawSpeedKmh.isFinite() || rawSpeedKmh < 0.0 ||
+            rawSpeedKmh > TelematicsConfig.MAX_REASONABLE_SPEED_KMH
+        if (invalidSpeed) invalidSpeedSamples++
+        // Suppress impossible speed inputs rather than silently clamping and scoring them.
+        val speedKmh = if (invalidSpeed) 0.0 else rawSpeedKmh
+
 
         lastLocation?.let { previous ->
             val dt = (location.time - previous.time) / 1000.0
@@ -325,7 +335,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         gpsQualitySum += gpsQuality(location.accuracy)
 
         refreshRoadContext(location, speedKmh)
-        detectOverspeed(id, speedKmh, location.time)
+        if (!invalidSpeed) detectOverspeed(id, speedKmh, location.time)
         updateTelemetry()
         persistMergedSample(force = true)
     }
@@ -435,6 +445,10 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             }
         }
 
+        // Each physical sensor has its own clock. Calculate rate and motion events
+        // only from fresh linear-acceleration callbacks, not interleaved gyro updates.
+        if (event.sensor.type != Sensor.TYPE_LINEAR_ACCELERATION) return
+        rawLinearSensorSamples++
         val now = event.timestamp / 1_000_000L
         if (previousSensorTs > 0L) {
             val dtMs = (now - previousSensorTs)
@@ -460,17 +474,32 @@ class TelemetryForegroundService : Service(), SensorEventListener {
             val speed = lastLocation?.let { if (it.hasSpeed()) it.speed * 3.6 else 0.0 } ?: 0.0
             val id = tripId ?: return
 
-            if (speed >= TelematicsConfig.MIN_MOVING_SPEED_KMH && longAcc <= TelematicsConfig.HARSH_BRAKING_MPS2) {
-                emit(id, EventType.HARSH_BRAKING, EventSeverity.MEDIUM, confidenceFor(abs(longAcc), abs(TelematicsConfig.HARSH_BRAKING_MPS2), 5.0), speed,
-                    "Longitudinal deceleration exceeded the harsh-braking threshold.", System.currentTimeMillis())
-            }
-            if (speed >= TelematicsConfig.MIN_MOVING_SPEED_KMH && longAcc >= TelematicsConfig.HARSH_ACCELERATION_MPS2) {
-                emit(id, EventType.HARSH_ACCELERATION, EventSeverity.MEDIUM, confidenceFor(abs(longAcc), TelematicsConfig.HARSH_ACCELERATION_MPS2, 5.0), speed,
-                    "Longitudinal acceleration exceeded the harsh-acceleration threshold.", System.currentTimeMillis())
-            }
-            if (speed >= TelematicsConfig.MIN_CORNER_SPEED_KMH && abs(latAcc) >= TelematicsConfig.AGGRESSIVE_LATERAL_MPS2) {
-                emit(id, EventType.AGGRESSIVE_CORNERING, EventSeverity.HIGH, confidenceFor(abs(latAcc), TelematicsConfig.AGGRESSIVE_LATERAL_MPS2, 7.0), speed,
-                    "Lateral acceleration exceeded the aggressive-cornering threshold.", System.currentTimeMillis())
+            val location = lastLocation
+            val reliableOrientationAndGps =
+                rx.isFinite() && ry.isFinite() && rz.isFinite() &&
+                location != null && location.hasBearing() && location.hasSpeed() &&
+                location.hasAccuracy() && location.accuracy in 0f..30f &&
+                (System.currentTimeMillis() - location.time) in 0L..5000L &&
+                speed <= TelematicsConfig.MAX_REASONABLE_SPEED_KMH
+            motionDetectorV2.observe(
+                timestampMs = now,
+                longitudinalMps2 = longAcc,
+                lateralMps2 = latAcc,
+                speedKmh = speed,
+                reliableOrientationAndGps = reliableOrientationAndGps,
+            ).forEach { detection ->
+                val type = when (detection.kind) {
+                    MotionKind.HARSH_BRAKING -> EventType.HARSH_BRAKING
+                    MotionKind.HARSH_ACCELERATION -> EventType.HARSH_ACCELERATION
+                    MotionKind.AGGRESSIVE_CORNERING -> EventType.AGGRESSIVE_CORNERING
+                }
+                emit(
+                    id, type,
+                    if (type == EventType.AGGRESSIVE_CORNERING) EventSeverity.HIGH else EventSeverity.MEDIUM,
+                    detection.confidence, speed,
+                    "Motion Rules v2: smoothed acceleration sustained for ${detection.evidenceMs} ms.",
+                    System.currentTimeMillis(),
+                )
             }
 
             if (now - lastPersistTs >= TelematicsConfig.STORAGE_INTERVAL_MS) {
@@ -599,11 +628,11 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         
         val quality = TelematicsQuality.calculate(
             gpsQuality = gpsQuality,
-            sensorSamples = sensorSamples,
+            sensorSamples = rawLinearSensorSamples,
             elapsedMs = elapsed,
             suspiciousJumps = suspiciousJumps,
             mockLocations = mockLocationCount,
-            maxSpeedKmh = maxSpeedKmh
+            maxSpeedKmh = if (invalidSpeedSamples > 0) TelematicsConfig.MAX_REASONABLE_SPEED_KMH + 1.0 else maxSpeedKmh
         )
 
         val score = SafetyEngine.score(
@@ -719,18 +748,19 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         val endedAt = System.currentTimeMillis()
         val elapsed = (endedAt - startedAt).coerceAtLeast(0L)
         val gpsQuality = if (gpsSamples > 0) gpsQualitySum / gpsSamples else 0.0
-        val telemetryQuality = TelematicsQuality.score(
-            gpsQuality,
-            sensorSamples,
-            elapsed,
-            events.size,
-            suspiciousJumps,
-        )
+        val telemetryQuality = TelematicsQuality.calculate(
+            gpsQuality = gpsQuality,
+            sensorSamples = rawLinearSensorSamples,
+            elapsedMs = elapsed,
+            suspiciousJumps = suspiciousJumps,
+            mockLocations = mockLocationCount,
+            maxSpeedKmh = if (invalidSpeedSamples > 0) TelematicsConfig.MAX_REASONABLE_SPEED_KMH + 1.0 else maxSpeedKmh,
+        ).overall
 
         val anomalyFlags = AntiGamingAssessment(buildList {
             if (suspiciousJumps > 0) add("suspicious_gps_jump:$suspiciousJumps")
             if (mockLocationCount > 0) add("mock_location:$mockLocationCount")
-            if (maxSpeedKmh > TelematicsConfig.MAX_REASONABLE_SPEED_KMH) add("impossible_speed")
+            if (invalidSpeedSamples > 0) add("impossible_speed:$invalidSpeedSamples")
             if (telemetryQuality < TripValidityEngine.MIN_TELEMETRY_QUALITY) add("low_telemetry_quality")
         })
 
