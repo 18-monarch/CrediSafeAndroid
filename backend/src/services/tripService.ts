@@ -5,8 +5,8 @@ import {
   XP_RULESET_V1,
   calculateLevelFromTotalXp,
   evaluateXpDecision,
-  reconstructServerSafetyScore,
 } from './xpEngineService.js';
+import { SAFETY_RULESET_V2, decodeTelemetryV2, corroborateSafetyV2 } from './safetyRulesV2.js';
 
 export interface CreateTripRequest {
   tripId: string;
@@ -231,6 +231,27 @@ export async function completeTrip(tripId: string, userId: string) {
 
     const metrics = await trx('trip_metrics').where({ trip_id: tripId }).first();
     const events = await trx('driving_events').where({ trip_id: tripId });
+    // No confirmed XP without a verified, persisted, chronological telemetry upload.
+    // A missing upload fails safely and is retriable; never finalize a journey as
+    // rejected just because mobile data was temporarily offline.
+    const telemetryAsset = await trx('telemetry_assets').where({ trip_id: tripId }).first();
+    const evidenceSamples = decodeTelemetryV2(telemetryAsset || {});
+    const verifiedSafety = corroborateSafetyV2(trip, events, evidenceSamples);
+    const checkedTrip = {
+      ...trip,
+      telemetry_quality: verifiedSafety.telemetryQuality,
+      trip_classification: (verifiedSafety.gpsQuality < 0.45 ||
+        verifiedSafety.telemetryQuality < 0.60) ? 'SUSPICIOUS' : trip.trip_classification,
+      eligibility_reason: (verifiedSafety.gpsQuality < 0.45 ||
+        verifiedSafety.telemetryQuality < 0.60)
+        ? 'Insufficient reliable telemetry for confirmed driving rewards.'
+        : trip.eligibility_reason,
+    };
+    const checkedMetrics = {
+      ...(metrics || {}),
+      gps_quality: Math.min(safeNumber(metrics?.gps_quality), verifiedSafety.gpsQuality),
+    };
+    const safetyRulesetVersion = SAFETY_RULESET_V2 + '|' + XP_RULESET_V1.version;
     const endedAt = trip.ended_at ? new Date(trip.ended_at) : new Date();
 
     // Calculate UTC daily and weekly stats for cap enforcement
@@ -261,13 +282,21 @@ export async function completeTrip(tripId: string, userId: string) {
     const weeklyXpSoFar = safeNumber(weeklyStats?.weekly_xp);
 
     const decision = evaluateXpDecision(
-      trip,
-      metrics,
+      checkedTrip,
+      checkedMetrics,
       events,
       dailyXpSoFar,
       dailyAwardsSoFar,
       weeklyXpSoFar,
+      verifiedSafety.score,
     );
+    decision.rulesetVersion = safetyRulesetVersion;
+    decision.reasonCodes.push('TELEMETRY_EVIDENCE_V2');
+    decision.breakdown.push({
+      code: 'safety_evidence_v2',
+      points: 0,
+      reason: `v2 telemetry corroboration: ${verifiedSafety.confirmedEvents} confirmed, ${verifiedSafety.uncorroboratedEvents} uncertain event(s), ${verifiedSafety.evidenceSampleCount} samples. The score is evidence-based, not client-supplied.`,
+    });
 
     const isEligible = decision.eligible && decision.confirmedXp >= 0;
     const finalStatus = isEligible ? 'VALIDATED' : 'REJECTED';
@@ -278,14 +307,14 @@ export async function completeTrip(tripId: string, userId: string) {
       reward_points: decision.rewardPoints,
       safety_score: decision.serverSafetyScore,
       eligibility_reason: decision.reason || null,
-      engine_version: XP_RULESET_V1.version,
+      engine_version: safetyRulesetVersion,
     });
 
     let newTotalXp = userTotalXp;
     let newTotalPoints = safeNumber(user.total_points);
 
     if (isEligible) {
-      const metadataJson = JSON.stringify(decision);
+      const metadataJson = JSON.stringify({ ...decision, verifiedSafety });
 
       // Additive immutable ledger entry with idempotency unique constraint
       try {
@@ -296,14 +325,14 @@ export async function completeTrip(tripId: string, userId: string) {
           source_id: tripId,
           delta_xp: decision.confirmedXp,
           reason_code: decision.reasonCodes.join(','),
-          ruleset_version: XP_RULESET_V1.version,
+          ruleset_version: safetyRulesetVersion,
           decision_metadata: metadataJson,
 
           // Legacy fields for backward compatibility with initial schema
           category: 'CONFIRMED_TRIP',
           points: decision.confirmedXp,
           reason: decision.reason,
-          engine_version: XP_RULESET_V1.version,
+          engine_version: safetyRulesetVersion,
           created_at: new Date(),
         });
       } catch {
@@ -349,11 +378,11 @@ export async function completeTrip(tripId: string, userId: string) {
       success: true,
       status: decision.status,
       tripId,
-      rulesetVersion: XP_RULESET_V1.version,
+      rulesetVersion: safetyRulesetVersion,
       authoritativeXp: decision.confirmedXp,
       authoritativePoints: decision.rewardPoints,
       authoritativeSafetyScore: decision.serverSafetyScore,
-      engineVersion: XP_RULESET_V1.version,
+      engineVersion: safetyRulesetVersion,
       eligible: decision.eligible,
       eligibilityReason: decision.reason || null,
       reasonCodes: decision.reasonCodes,
