@@ -37,6 +37,7 @@ import com.credisafe.mobile.domain.TelematicsQuality
 import com.credisafe.mobile.domain.TelemetryMath
 import com.credisafe.mobile.domain.MotionEventDetectorV2
 import com.credisafe.mobile.domain.MotionKind
+import com.credisafe.mobile.domain.SustainedOverspeedDetectorV2
 import com.credisafe.mobile.domain.LatLngPoint
 import com.credisafe.mobile.domain.MobilityAccumulator
 import com.credisafe.mobile.domain.MobilityDecision
@@ -99,6 +100,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     private var rawLinearSensorSamples = 0L
     private var invalidSpeedSamples = 0
     private val motionDetectorV2 = MotionEventDetectorV2()
+    private val overspeedDetectorV2 = SustainedOverspeedDetectorV2()
     private var locationSamples = 0L
     private var suspiciousJumps = 0
     private var mockLocationCount = 0
@@ -212,6 +214,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
         rawLinearSensorSamples = 0L
         invalidSpeedSamples = 0
         motionDetectorV2.reset()
+        overspeedDetectorV2.reset()
         locationSamples = 0
         suspiciousJumps = 0
         mockLocationCount = 0
@@ -336,6 +339,7 @@ class TelemetryForegroundService : Service(), SensorEventListener {
 
         refreshRoadContext(location, speedKmh)
         if (!invalidSpeed) detectOverspeed(id, speedKmh, location.time)
+        else overspeedDetectorV2.reset()
         updateTelemetry()
         persistMergedSample(force = true)
     }
@@ -388,10 +392,10 @@ class TelemetryForegroundService : Service(), SensorEventListener {
     }
 
     private fun detectOverspeed(id: String, speedKmh: Double, timestampMs: Long) {
-        val decision = RoadRuleEngine.overspeed(
+        val decision = overspeedDetectorV2.observe(
             speedKmh = speedKmh,
             context = currentRoadContext,
-            nowMs = timestampMs,
+            timestampMs = timestampMs,
         )
         when (decision.level) {
             OverspeedLevel.MAJOR -> emit(
