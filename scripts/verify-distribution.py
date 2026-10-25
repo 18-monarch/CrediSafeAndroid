@@ -96,8 +96,8 @@ gradle = require_text(
 gradle_properties = require_text(
     "gradle.properties",
     [
-        "CREDISAFE_VERSION_CODE=27",
-        "CREDISAFE_VERSION_NAME=2.7.0-beta.3",
+        "CREDISAFE_VERSION_CODE=28",
+        "CREDISAFE_VERSION_NAME=2.7.0-beta.4",
         "CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/",
     ],
 )
@@ -130,6 +130,9 @@ required_files = [
     "app/src/main/java/com/credisafe/mobile/service/MobilityActivityReceiver.kt",
     "app/src/main/java/com/credisafe/mobile/data/RoadContextRepository.kt",
     "backend/src/services/roadContextService.ts",
+    "backend/src/services/safetyRulesV2.ts",
+    "app/src/main/java/com/credisafe/mobile/domain/MotionEventDetectorV2.kt",
+    "app/src/main/java/com/credisafe/mobile/domain/SustainedOverspeedDetectorV2.kt",
     "backend/migrations/20260829000000_mobility_intelligence_v2_6.sql",
     "backend/migrations/20260831000000_open_mobility_v2_7.sql",
     "app/src/main/java/com/credisafe/mobile/OpenMobilityMap.kt",
@@ -260,6 +263,6 @@ if failures:
         print(" -", failure)
     sys.exit(1)
 
-print("CrediSafe v2.7.0-beta.3 Open Mobility verification PASSED.")
+print("CrediSafe v2.7.0-beta.4 Rules Engine v2 pilot verification PASSED.")
 print("MapLibre + OSM/Valhalla + secure auth + Trip Validity + server authority are present.")
 print("Local config/secrets may exist locally only when untracked and ignored.")
