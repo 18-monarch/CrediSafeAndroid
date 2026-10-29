@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { validate as isUuid } from 'uuid';
 import db from '../db/knex.js';
 import { classifyAuthUniqueViolation } from './authDatabaseErrors.js';
+import { createIndependentPasswordAccountId } from './registrationIdentity.js';
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -231,29 +232,38 @@ export async function createSession(
   const passwordHash = await bcrypt.hash(password, 12);
   const deviceAccount = await db('users').where({ id: deviceId }).first();
 
+  // Preserve trip/XP history when converting an existing guest profile.
+  // The conditional update prevents two concurrent sign-ups from overwriting
+  // the guest profile after both have read it.
   if (deviceAccount && deviceAccount.account_type === 'guest' && !deviceAccount.password_hash) {
     try {
-      await db('users').where({ id: deviceId }).update({
-        email,
-        name,
-        password_hash: passwordHash,
-        account_type: 'password',
-        updated_at: new Date(),
-      });
+      const updatedRows = await db('users')
+        .where({ id: deviceId, account_type: 'guest' })
+        .whereNull('password_hash')
+        .update({
+          email,
+          name,
+          password_hash: passwordHash,
+          account_type: 'password',
+          updated_at: new Date(),
+        });
+
+      if (updatedRows > 0) {
+        user = await db('users').where({ id: deviceId }).first();
+      }
     } catch (error) {
       throwKnownDatabaseConflict(error);
       throw error;
     }
-    user = await db('users').where({ id: deviceId }).first();
-  } else if (deviceAccount) {
-    throw new AuthError(
-      409,
-      'device_account_conflict',
-      'This installation is already linked to another account. Sign in to that account or use a different installation to register another account.',
-    );
-  } else {
+  }
+
+  // The installation identifies this device/session, not the user account.
+  // New password accounts therefore get independent UUIDs. This lets people
+  // sign out and register another email on the same phone without overwriting
+  // or locking the existing account. Legacy guest upgrades above keep their ID.
+  if (!user) {
     const candidate = {
-      id: deviceId,
+      id: createIndependentPasswordAccountId(deviceId),
       name,
       email,
       password_hash: passwordHash,
