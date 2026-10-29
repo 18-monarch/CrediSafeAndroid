@@ -59,6 +59,8 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.credisafe.mobile.data.AuthManager
+import com.credisafe.mobile.data.validateLoginInput
+import com.credisafe.mobile.data.validateRegistrationInput
 import com.credisafe.mobile.data.CrediSafeDb
 import com.credisafe.mobile.data.DrivingEvent
 import com.credisafe.mobile.data.TripRecord
@@ -468,6 +470,7 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
             label = { Text("Email Address") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Green,
                 unfocusedBorderColor = Surface3,
@@ -516,8 +519,8 @@ private fun AuthScreen(auth: AuthManager, onRegister: () -> Unit, onAuthSuccess:
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
-                if (email.isEmpty() || password.isEmpty()) {
-                    error = "Please enter both email and password"
+                validateLoginInput(email, password)?.let {
+                    error = it
                     return@Button
                 }
                 loading = true
@@ -648,12 +651,8 @@ private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess
         Spacer(Modifier.height(32.dp))
         Button(
             onClick = {
-                if (name.isEmpty() || email.isEmpty() || password.isEmpty()) {
-                    error = "All fields are required"
-                    return@Button
-                }
-                if (password != confirmPassword) {
-                    error = "Passwords do not match"
+                validateRegistrationInput(name, email, password, confirmPassword)?.let {
+                    error = it
                     return@Button
                 }
                 loading = true
