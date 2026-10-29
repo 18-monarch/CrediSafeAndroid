@@ -20,6 +20,12 @@ router.post('/auth/session', async (req, res) => {
     res.json(session);
   } catch (err: any) {
     if (err instanceof AuthError) {
+      // Safe observability: log only a fixed error code and HTTP status.
+      // Never log request body, email, password, access/refresh tokens or device ID.
+      console.info('[auth/session] rejected', {
+        status: err.status,
+        code: err.code,
+      });
       return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     }
 
