@@ -14,7 +14,7 @@ const router = Router();
 // 1. Auth
 router.post('/auth/session', async (req, res) => {
   try {
-    const { deviceId, email, password, name } = req.body;
+    const { deviceId, email, password, name } = req.body || {};
     if (!deviceId) return res.status(400).json({ error: { code: 'invalid_request', message: 'deviceId is required' } });
     const session = await createSession(deviceId as string, email as string, password as string, name as string);
     res.json(session);
