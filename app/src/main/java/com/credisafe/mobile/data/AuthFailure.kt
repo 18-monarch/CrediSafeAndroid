@@ -6,7 +6,8 @@ package com.credisafe.mobile.data
  */
 internal fun authFailureMessage(httpStatus: Int, errorCode: String?): String =
     when (errorCode?.lowercase()) {
-        "credentials_required" -> "This account requires email and password. Please sign in with your registered credentials.\n        "invalid_credentials" -> "Email or password is incorrect. Check your details and try again."
+        "credentials_required" -> "This account requires email and password. Please sign in with your registered credentials."
+        "invalid_credentials" -> "Email or password is incorrect. Check your details and try again."
         "invalid_email" -> "Enter a valid email address."
         "invalid_password" -> "Choose a password between 8 and 72 characters."
         "invalid_device" -> "This installation could not be identified. Restart CrediSafe and try again."
