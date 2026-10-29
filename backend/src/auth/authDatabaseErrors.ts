@@ -27,7 +27,7 @@ export function classifyAuthUniqueViolation(error: unknown): AuthDatabaseConflic
     };
   }
 
-  if (constraint === 'users_pkey' || constraint.endsWith('_pkey')) {
+  if (constraint === 'users_pkey') {
     return {
       status: 409,
       code: 'device_account_conflict',
