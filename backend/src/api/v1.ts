@@ -22,7 +22,18 @@ router.post('/auth/session', async (req, res) => {
     if (err instanceof AuthError) {
       return res.status(err.status).json({ error: { code: err.code, message: err.message } });
     }
-    res.status(500).json({ error: { code: 'server_error', message: 'Authentication is temporarily unavailable.' } });
+
+    // Diagnostic metadata only. Never log request bodies, passwords, email
+    // addresses, access tokens, or refresh tokens.
+    console.error('[auth/session] unexpected failure', {
+      name: err instanceof Error ? err.name : typeof err,
+      code: typeof err?.code === 'string' ? err.code : undefined,
+      constraint: typeof err?.constraint === 'string' ? err.constraint : undefined,
+      table: typeof err?.table === 'string' ? err.table : undefined,
+    });
+    return res.status(503).json({
+      error: { code: 'session_unavailable', message: 'Authentication is temporarily unavailable. Please try again shortly.' }
+    });
   }
 });
 
