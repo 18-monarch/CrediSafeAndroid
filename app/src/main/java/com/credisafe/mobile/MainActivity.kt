@@ -602,6 +602,7 @@ private fun RegisterScreen(auth: AuthManager, onLogin: () -> Unit, onAuthSuccess
             label = { Text("Email Address") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Green, unfocusedBorderColor = Surface3,
                 cursorColor = Green, focusedLabelColor = Green, unfocusedLabelColor = Muted,
