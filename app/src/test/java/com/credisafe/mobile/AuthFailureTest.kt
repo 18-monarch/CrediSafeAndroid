@@ -14,6 +14,10 @@ class AuthFailureTest {
         assertEquals(
             "This is a legacy account that must be secured on the original installation before it can be used here.",
             authFailureMessage(409, "password_setup_required"),
+        ),
+        assertEquals(
+            "This account requires email and password. Please sign in with your registered credentials.",
+            authFailureMessage(401, "credentials_required"),
         )
         assertEquals(
             "An account with this email may already exist. Try signing in instead.",
