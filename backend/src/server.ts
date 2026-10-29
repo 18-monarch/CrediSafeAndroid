@@ -33,19 +33,37 @@ app.use(express.json({ limit: '3mb' }));
 app.use('/v1/auth', rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-7', legacyHeaders: false }));
 app.use('/v1/road', rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false }));
 
-app.get('/health', async (req, res) => {
+app.get('/health', async (_req, res) => {
   try {
-    await db.raw('SELECT 1');
-    res.json({
+    const result = await db.raw(`
+      SELECT
+        to_regclass('public.users') AS users_table,
+        to_regclass('public.auth_refresh_sessions') AS refresh_sessions_table
+    `);
+    const row = result.rows?.[0];
+    const authReady = Boolean(row?.users_table && row?.refresh_sessions_table);
+
+    if (!authReady) {
+      return res.status(503).json({
+        status: 'degraded',
+        database: 'ok',
+        authReady: false,
+        version: '2.7.0',
+      });
+    }
+
+    return res.json({
       status: 'ok',
       database: 'ok',
-      version: '2.7.0'
+      authReady: true,
+      version: '2.7.0',
     });
-  } catch (err) {
-    res.status(503).json({
-      status: 'ok',
+  } catch {
+    return res.status(503).json({
+      status: 'degraded',
       database: 'down',
-      version: '2.7.0'
+      authReady: false,
+      version: '2.7.0',
     });
   }
 });
