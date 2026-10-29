@@ -20,6 +20,6 @@ test('maps device primary-key collisions without exposing SQL errors', () => {
 
 test('does not reclassify unrelated database failures', () => {
   assert.equal(classifyAuthUniqueViolation({ code: '42P01', table: 'auth_refresh_sessions' }), null);
-  assert.equal(classifyAuthUniqueViolation({ code: '23505', constraint: 'trips_pkey' })?.code, 'device_account_conflict');
+  assert.equal(classifyAuthUniqueViolation({ code: '23505', constraint: 'trips_pkey' }), null);
   assert.equal(classifyAuthUniqueViolation(new Error('duplicate key')), null);
 });
