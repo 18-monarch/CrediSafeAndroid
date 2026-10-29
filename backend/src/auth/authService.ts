@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { validate as isUuid } from 'uuid';
 import db from '../db/knex.js';
+import { classifyAuthUniqueViolation } from './authDatabaseErrors.js';
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -143,58 +144,7 @@ export async function createSession(deviceId: string, rawEmail?: string, rawPass
     return issueSession(guest.id, deviceId);
   }
 
-  const password = requirePassword(rawPassword);
-  const passwordHash = await bcrypt.hash(password, 12);
-  let user = await db('users').whereRaw('LOWER(email) = ?', [email]).first();
-
-  if (!user) {
-    if (!name) {
-      throw new AuthError(401, 'invalid_credentials', 'Incorrect email or password.');
-    }
-
-    const deviceAccount = await db('users').where({ id: deviceId }).first();
-    if (deviceAccount && deviceAccount.account_type === 'guest') {
-      await db('users').where({ id: deviceId }).update({
-        email,
-        name,
-        password_hash: passwordHash,
-        account_type: 'password',
-        updated_at: new Date(),
-      });
-      user = await db('users').where({ id: deviceId }).first();
-    } else if (deviceAccount) {
-      throw new AuthError(409, 'device_account_conflict', 'This installation is already linked to another account.');
-    } else {
-      user = {
-        id: deviceId,
-        name,
-        email,
-        password_hash: passwordHash,
-        account_type: 'password',
-        total_xp: 0,
-        total_points: 0,
-      };
-      await db('users').insert(user);
-    }
-  } else if (user.password_hash) {
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) throw new AuthError(401, 'invalid_credentials', 'Incorrect email or password.');
-  } else {
-    // Safe migration for accounts created by the pre-v2.7 beta: only the same
-    // installation that owns the account UUID can establish its first hash.
-    if (user.id !== deviceId || !name) {
-      throw new AuthError(409, 'password_setup_required', 'Use Sign Up on the original device to secure this legacy beta account.');
-    }
-    await db('users').where({ id: user.id }).update({
-      password_hash: passwordHash,
-      account_type: 'password',
-      name,
-      updated_at: new Date(),
-    });
-  }
-
-  return issueSession(user.id, deviceId);
-}
+undefined}
 
 export function verifyToken(token: string) {
   try {
