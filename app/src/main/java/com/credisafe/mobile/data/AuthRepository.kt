@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.credisafe.mobile.data.api.AuthRequest
+import com.credisafe.mobile.data.api.AuthApiErrorEnvelope
 import com.credisafe.mobile.data.api.CloudApi
 import com.credisafe.mobile.data.api.RefreshSessionRequest
 import kotlinx.coroutines.CoroutineScope
@@ -12,7 +13,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 import java.util.UUID
+import java.io.IOException
+import java.net.SocketTimeoutException
 
 class AuthRepository(context: Context, private val api: CloudApi) {
     companion object {
@@ -21,6 +28,8 @@ class AuthRepository(context: Context, private val api: CloudApi) {
         private val refreshMutex = Mutex()
         private const val TOKEN_SAFETY_WINDOW_MS = 30_000L
     }
+
+    private val responseJson = Json { ignoreUnknownKeys = true }
 
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -37,7 +46,7 @@ class AuthRepository(context: Context, private val api: CloudApi) {
     suspend fun login(email: String? = null, password: String? = null, name: String? = null): Result<String> =
         withContext(Dispatchers.IO) {
             try {
-                val response = api.createSession(AuthRequest(getDeviceId(), email, password, name))
+                val response = createSessionWithRetry(AuthRequest(getDeviceId(), email, password, name))
                 val body = if (response.isSuccessful) response.body() else null
                 if (body != null) {
                     refreshMutex.withLock {
@@ -51,12 +60,57 @@ class AuthRepository(context: Context, private val api: CloudApi) {
                     }
                     Result.success(body.accessToken)
                 } else {
-                    Result.failure(Exception("Authentication failed: ${response.code()}"))
+                    Result.failure(serverFailure(response))
                 }
-            } catch (e: Exception) {
-                Result.failure(e)
+            } catch (cancelled: CancellationException) {
+                // Preserve coroutine cancellation instead of turning it into an auth failure.
+                throw cancelled
+            } catch (_: SocketTimeoutException) {
+                Result.failure(IllegalStateException("Connection timed out. The server may be waking up; please try again."))
+            } catch (_: IOException) {
+                Result.failure(IllegalStateException("Could not connect to CrediSafe. Check your internet connection and try again."))
+            } catch (_: Exception) {
+                Result.failure(IllegalStateException("Could not complete authentication. Please try again."))
             }
         }
+
+    /**
+     * Render's free instance can be waking from idle when the user first signs in.
+     * Retry one transient network/5xx failure only. Never retry credential or
+     * account-conflict responses, and never leave the loading state spinning forever.
+     */
+    private suspend fun createSessionWithRetry(request: AuthRequest): retrofit2.Response<com.credisafe.mobile.data.api.AuthResponse> {
+        var retried = false
+        while (true) {
+            try {
+                val response = api.createSession(request)
+                if (!retried && response.code() in 500..504) {
+                    response.errorBody()?.close()
+                    retried = true
+                    delay(1_500)
+                    continue
+                }
+                return response
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                if (retried) throw error
+                retried = true
+                delay(1_500)
+            }
+        }
+    }
+
+    private fun serverFailure(response: retrofit2.Response<*>): Exception {
+        val apiError = try {
+            response.errorBody()?.string()?.let {
+                responseJson.decodeFromString<AuthApiErrorEnvelope>(it).error
+            }
+        } catch (_: Exception) {
+            null
+        }
+        return IllegalStateException(authFailureMessage(response.code(), apiError?.code))
+    }
 
     private fun getDeviceId(): String {
         var id = prefs.getString("device_id", null)

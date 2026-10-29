@@ -32,6 +32,17 @@ data class RefreshSessionRequest(
 )
 
 @Serializable
+data class AuthApiErrorEnvelope(
+    val error: AuthApiError? = null,
+)
+
+@Serializable
+data class AuthApiError(
+    val code: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
 data class TripUploadRequest(
     val tripId: String,
     val userId: String? = null,
@@ -186,6 +197,7 @@ data class HealthResponse(
     val status: String,
     val database: String,
     val version: String,
+    val authReady: Boolean? = null,
 )
 
 interface CloudApi {

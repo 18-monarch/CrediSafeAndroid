@@ -96,8 +96,8 @@ gradle = require_text(
 gradle_properties = require_text(
     "gradle.properties",
     [
-        "CREDISAFE_VERSION_CODE=29",
-        "CREDISAFE_VERSION_NAME=2.7.0-beta.4.1",
+        "CREDISAFE_VERSION_CODE=30",
+        "CREDISAFE_VERSION_NAME=2.7.0-beta.4.2",
         "CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/",
     ],
 )
@@ -142,6 +142,7 @@ required_files = [
     "docs/SECURITY_V2_7.md",
     "docs/DISTRIBUTION_V2_7.md",
     ".github/workflows/android-beta-release.yml",
+    ".github/workflows/publish-beta4-2.yml",
     "scripts/build-beta.ps1",
     "scripts/create-beta-keystore.ps1",
 ]
@@ -224,6 +225,18 @@ workflow = require_text(
     ],
 )
 
+auth_hotfix_workflow = require_text(
+    ".github/workflows/publish-beta4-2.yml",
+    [
+        "BETA_KEYSTORE_BASE64",
+        "assembleRelease",
+        "bundleRelease",
+        "VERSION: '2.7.0-beta.4.2'",
+        "CODE: '30'",
+        "Same signing certificate as published Beta 4.1: VERIFIED",
+    ],
+)
+
 active_sources = [
     ROOT / "app/build.gradle.kts",
     ROOT / "app/src/main/AndroidManifest.xml",
@@ -263,6 +276,6 @@ if failures:
         print(" -", failure)
     sys.exit(1)
 
-print("CrediSafe v2.7.0-beta.4.1 Rules Engine v2 pilot verification PASSED.")
+print("CrediSafe v2.7.0-beta.4.2 authentication reliability pilot verification PASSED.")
 print("MapLibre + OSM/Valhalla + secure auth + Trip Validity + server authority are present.")
 print("Local config/secrets may exist locally only when untracked and ignored.")
