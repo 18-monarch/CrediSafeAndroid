@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -45,7 +46,7 @@ class AuthRepository(context: Context, private val api: CloudApi) {
     suspend fun login(email: String? = null, password: String? = null, name: String? = null): Result<String> =
         withContext(Dispatchers.IO) {
             try {
-                val response = api.createSession(AuthRequest(getDeviceId(), email, password, name))
+                val response = createSessionWithRetry(AuthRequest(getDeviceId(), email, password, name))
                 val body = if (response.isSuccessful) response.body() else null
                 if (body != null) {
                     refreshMutex.withLock {
@@ -72,6 +73,33 @@ class AuthRepository(context: Context, private val api: CloudApi) {
                 Result.failure(IllegalStateException("Could not complete authentication. Please try again."))
             }
         }
+
+    /**
+     * Render's free instance can be waking from idle when the user first signs in.
+     * Retry one transient network/5xx failure only. Never retry credential or
+     * account-conflict responses, and never leave the loading state spinning forever.
+     */
+    private suspend fun createSessionWithRetry(request: AuthRequest): retrofit2.Response<com.credisafe.mobile.data.api.AuthResponse> {
+        var retried = false
+        while (true) {
+            try {
+                val response = api.createSession(request)
+                if (!retried && response.code() in 500..504) {
+                    response.errorBody()?.close()
+                    retried = true
+                    delay(1_500)
+                    continue
+                }
+                return response
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IOException) {
+                if (retried) throw error
+                retried = true
+                delay(1_500)
+            }
+        }
+    }
 
     private fun serverFailure(response: retrofit2.Response<*>): Exception {
         val apiError = try {
