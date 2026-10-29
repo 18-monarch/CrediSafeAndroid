@@ -197,6 +197,7 @@ data class HealthResponse(
     val status: String,
     val database: String,
     val version: String,
+    val authReady: Boolean? = null,
 )
 
 interface CloudApi {
