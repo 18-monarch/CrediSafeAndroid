@@ -96,8 +96,8 @@ gradle = require_text(
 gradle_properties = require_text(
     "gradle.properties",
     [
-        "CREDISAFE_VERSION_CODE=29",
-        "CREDISAFE_VERSION_NAME=2.7.0-beta.4.1",
+        "CREDISAFE_VERSION_CODE=30",
+        "CREDISAFE_VERSION_NAME=2.7.0-beta.4.2",
         "CREDISAFE_API_RELEASE_URL=https://credisafeandroid.onrender.com/v1/",
     ],
 )
@@ -263,6 +263,6 @@ if failures:
         print(" -", failure)
     sys.exit(1)
 
-print("CrediSafe v2.7.0-beta.4.1 Rules Engine v2 pilot verification PASSED.")
+print("CrediSafe v2.7.0-beta.4.2 authentication reliability pilot verification PASSED.")
 print("MapLibre + OSM/Valhalla + secure auth + Trip Validity + server authority are present.")
 print("Local config/secrets may exist locally only when untracked and ignored.")
