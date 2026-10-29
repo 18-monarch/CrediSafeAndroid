@@ -32,6 +32,17 @@ data class RefreshSessionRequest(
 )
 
 @Serializable
+data class AuthApiErrorEnvelope(
+    val error: AuthApiError? = null,
+)
+
+@Serializable
+data class AuthApiError(
+    val code: String? = null,
+    val message: String? = null,
+)
+
+@Serializable
 data class TripUploadRequest(
     val tripId: String,
     val userId: String? = null,
