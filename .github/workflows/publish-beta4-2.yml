@@ -114,14 +114,14 @@ jobs:
           [[ "$BADGING" == *"name='com.credisafe.mobile'"* ]]
           [[ "$BADGING" == *"versionCode='30'"* ]]
           [[ "$BADGING" == *"versionName='2.7.0-beta.4.2'"* ]]
-          gh release download v2.7.0-beta.4 \
-            --pattern 'CrediSafe-2.7.0-beta.4.2.apk' --dir reference-beta4-1
-          OLD="$("$TOOLS/apksigner" verify --print-certs reference-beta4-1/CrediSafe-2.7.0-beta.4.2.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
+          gh release download v2.7.0-beta.4.1 \
+            --pattern 'CrediSafe-2.7.0-beta.4.1.apk' --dir reference-beta4-1
+          OLD="$("$TOOLS/apksigner" verify --print-certs reference-beta4-1/CrediSafe-2.7.0-beta.4.1.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
           NEW="$("$TOOLS/apksigner" verify --print-certs "release-output/$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)"
           test -n "$OLD"
           test -n "$NEW"
           test "$OLD" = "$NEW"
-          echo "Same certificate as published Beta 4: VERIFIED"
+          echo "Same signing certificate as published Beta 4.1: VERIFIED"
 
       - name: Generate checksums and verify archive integrity
         shell: bash
@@ -166,7 +166,7 @@ jobs:
             "release-output/$AAB" \
             release-output/SHA256SUMS.txt \
             --target "$GITHUB_SHA" \
-            --title "CrediSafe v2.7.0 Beta 4.1 — Automatic Map Speed Limits" \
+            --title "CrediSafe v2.7.0 Beta 4.2 — Authentication Reliability Hotfix" \
             --notes-file RELEASE_NOTES.md \
             --prerelease
           echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$APK"
