@@ -95,8 +95,8 @@ server.on('upgrade', async (request, socket, head) => {
     }
 
     try {
-      const account = await db('users').select('account_status').where({ id: decoded.userId }).first();
-      if (!account || account.account_status === 'SUSPENDED') {
+      const account = await db('users').select('account_status','session_version').where({ id: decoded.userId }).first();
+      if (!account || account.account_status === 'SUSPENDED' || Number(decoded.sessionVersion ?? 0) !== Number(account.session_version ?? 0)) {
         socket.write('HTTP/1.1 403 Forbidden\\r\\n\\r\\n');
         socket.destroy();
         return;
