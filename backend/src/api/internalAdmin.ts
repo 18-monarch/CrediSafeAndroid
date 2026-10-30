@@ -2,6 +2,7 @@ import {
   createHash, createHmac, randomUUID, timingSafeEqual,
 } from 'node:crypto';
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import type { Knex } from 'knex';
 import { validate as isUuid } from 'uuid';
 import { calculateLevelFromTotalXp } from '../services/xpEngineService.js';
 import db from '../db/knex.js';
@@ -125,7 +126,7 @@ function requireRoles(req: AdminRequest, res: Response, roles: AdminRole[]): boo
 }
 
 async function audit(
-  trx: typeof db,
+  trx: Knex.Transaction,
   actor: string,
   action: string,
   resourceType: string,
