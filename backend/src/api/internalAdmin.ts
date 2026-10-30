@@ -216,12 +216,32 @@ internalAdminRouter.post('/team/bootstrap-owner', async (req, res) => {
       if (current.user_id === userId) return res.json({ success: true, role: 'OWNER', alreadyBootstrapped: true });
       return res.status(409).json({ error: 'An owner is already configured; use owner-managed team access' });
     }
-    await db('admin_members').insert({
-      user_id: userId, role: 'OWNER', status: 'ACTIVE',
-      created_by: userId, reason: 'Initial owner bootstrap from configured server-side allowlist',
+    await db.transaction(async trx => {
+      const existing = await trx('admin_members').where({ user_id: userId }).forUpdate().first();
+      if (existing?.status === 'ACTIVE' && existing.role !== 'OWNER') {
+        throw new Error('OWNER_ID_ALREADY_ASSIGNED');
+      }
+      await trx('admin_members').insert({
+        user_id: userId, role: 'OWNER', status: 'ACTIVE',
+        created_by: userId, reason: 'Initial owner bootstrap from configured server-side allowlist',
+      }).onConflict('user_id').merge({
+        role: 'OWNER', status: 'ACTIVE', created_by: userId,
+        reason: 'Owner bootstrap confirmed by server-side allowlist', updated_at: new Date(),
+      });
+      if (!existing || existing.status !== 'ACTIVE') {
+        await trx('admin_audit_logs').insert({
+          id: randomUUID(), actor_user_id: userId, action: 'OWNER_BOOTSTRAPPED',
+          resource_type: 'ADMIN_MEMBER', resource_id: userId,
+          reason: 'Initial owner bootstrap from configured server-side allowlist',
+          request_id: randomUUID(), metadata: JSON.stringify({ role: 'OWNER' }),
+        });
+      }
     });
     return res.json({ success: true, role: 'OWNER', alreadyBootstrapped: false });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === 'OWNER_ID_ALREADY_ASSIGNED') {
+      return res.status(409).json({ error: 'This identity already has a different active team role' });
+    }
     return res.status(503).json({ error: 'Owner bootstrap failed' });
   }
 });
