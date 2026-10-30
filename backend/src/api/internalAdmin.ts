@@ -301,10 +301,15 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
   const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
   if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
-    await db.transaction(async trx => {
+    const result = await db.transaction(async trx => {
+      const previous = await trx('admin_audit_logs').where({ request_id: operationId }).first();
+      if (previous) return { duplicate: true };
       const user = await trx('users').where({ id: userId }).forUpdate().first();
       if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-      if (user.account_status === 'SUSPENDED') return;
+      if (user.account_status === 'SUSPENDED') {
+        await audit(trx, req.admin!.userId, 'USER_SUSPEND_NOOP', 'USER', userId, reason, {}, operationId!);
+        return { duplicate: false };
+      }
       await trx('users').where({ id: userId }).update({
         account_status: 'SUSPENDED', suspended_at: new Date(),
         suspension_reason: reason, updated_at: new Date(),
@@ -312,8 +317,9 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
       await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
       await audit(trx, req.admin!.userId, 'USER_SUSPENDED', 'USER', userId, reason, {}, operationId!);
+      return { duplicate: false };
     });
-    res.json({ success: true, accountStatus: 'SUSPENDED' });
+    res.json({ success: true, accountStatus: 'SUSPENDED', ...result });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to suspend account' }); }
 });
 
@@ -324,15 +330,22 @@ adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
   const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
   if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
-    await db.transaction(async trx => {
+    const result = await db.transaction(async trx => {
+      const previous = await trx('admin_audit_logs').where({ request_id: operationId }).first();
+      if (previous) return { duplicate: true };
       const user = await trx('users').where({ id: userId }).forUpdate().first();
       if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
+      if (user.account_status === 'ACTIVE') {
+        await audit(trx, req.admin!.userId, 'USER_RESTORE_NOOP', 'USER', userId, reason, {}, operationId!);
+        return { duplicate: false };
+      }
       await trx('users').where({ id: userId }).update({
         account_status: 'ACTIVE', suspended_at: null, suspension_reason: null, updated_at: new Date(),
       });
       await audit(trx, req.admin!.userId, 'USER_RESTORED', 'USER', userId, reason, {}, operationId!);
+      return { duplicate: false };
     });
-    res.json({ success: true, accountStatus: 'ACTIVE' });
+    res.json({ success: true, accountStatus: 'ACTIVE', ...result });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to restore account' }); }
 });
 
@@ -343,13 +356,15 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: AdminRequest, res
   const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
   if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
-    const count = await db.transaction(async trx => {
+    const result = await db.transaction(async trx => {
+      const previous = await trx('admin_audit_logs').where({ request_id: operationId }).first();
+      if (previous) return { sessionsRevoked: 0, duplicate: true };
       const rows = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
       await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows }, operationId!);
-      return rows;
+      return { sessionsRevoked: rows, duplicate: false };
     });
-    res.json({ success: true, sessionsRevoked: count });
+    res.json({ success: true, ...result });
   } catch { res.status(503).json({ error: 'Unable to revoke sessions' }); }
 });
 
@@ -499,6 +514,8 @@ adminRouter.post('/config', async (req: AdminRequest, res) => {
   }
   try {
     const result = await db.transaction(async trx => {
+      const priorAudit = await trx('admin_audit_logs').where({ request_id: operationId }).first();
+      if (priorAudit) return { key, version: null, duplicate: true };
       const previous = await trx('admin_config').where({ config_key: key }).forUpdate().first();
       const nextVersion = safeCount(previous?.version) + 1;
       await trx('admin_config').insert({
@@ -537,6 +554,8 @@ adminRouter.post('/team', async (req: AdminRequest, res) => {
   }
   try {
     const result = await db.transaction(async trx => {
+      const priorAudit = await trx('admin_audit_logs').where({ request_id: operationId }).first();
+      if (priorAudit) return { duplicate: true, userId, role, status };
       const existing = await trx('admin_members').where({ user_id: userId }).forUpdate().first();
       const existingIsActiveOwner = existing?.role === 'OWNER' && existing?.status === 'ACTIVE';
       const ownerIsBeingRemoved = existingIsActiveOwner && (role !== 'OWNER' || status !== 'ACTIVE');
