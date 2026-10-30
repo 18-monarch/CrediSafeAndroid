@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { validConfigValue, verifyAdminRequestSignature, shouldBootstrapInitialOwner } from '../../src/api/internalAdmin.js';
+import { validConfigValue, verifyAdminRequestSignature } from '../../src/api/internalAdmin.js';
 
 const secret = 'operations-center-test-secret-at-least-thirty-two-characters';
 const userId = randomUUID();
@@ -70,14 +70,4 @@ test('remote configuration accepts only supported typed values', () => {
   assert.equal(validConfigValue('minimum_android_version', 'latest'), false);
   assert.equal(validConfigValue('xp_ruleset_version', 'XP_RULESET_V2'), false);
   assert.equal(validConfigValue('arbitrary_sql', 'DROP TABLE users'), false);
-});
-
-
-test('initial owner bootstrap is allowlisted, route-bound, and globally one-time', () => {
-  assert.equal(shouldBootstrapInitialOwner(true, '/authz', false, 0), true);
-  assert.equal(shouldBootstrapInitialOwner(false, '/authz', false, 0), false);
-  assert.equal(shouldBootstrapInitialOwner(true, '/overview', false, 0), false);
-  assert.equal(shouldBootstrapInitialOwner(true, '/authz', true, 0), false);
-  assert.equal(shouldBootstrapInitialOwner(true, '/authz', false, 1), false);
-  assert.equal(shouldBootstrapInitialOwner(true, '/authz', false, 3), false);
 });

@@ -12,6 +12,6 @@
 - Live dashboard data is authenticated.
 - Trip ownership is checked for event, telemetry, completion, and detail operations.
 - XP and reward ledgers have per-trip uniqueness constraints.
-- Telemetry uploads are protected against oversized compressed payloads, decompression expansion, malformed hashes, sample-count mismatch, and non-monotonic timestamps.\n- Initial Owner bootstrap is serialized with a PostgreSQL advisory transaction lock and is closed once an active Owner exists.
+- Telemetry uploads are protected against oversized compressed payloads, decompression expansion, malformed hashes, sample-count mismatch, and non-monotonic timestamps.
 
 Remaining production work: verified-email flow, password reset, refresh-token rotation/revocation, structured audit logs, secret rotation runbooks, external penetration testing, and an abuse-monitoring dashboard.
