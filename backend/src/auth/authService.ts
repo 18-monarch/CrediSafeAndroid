@@ -146,6 +146,11 @@ function throwKnownDatabaseConflict(error: unknown): never | void {
 async function findGuestOrCreate(deviceId: string) {
   let guest = await db('users').where({ id: deviceId }).first();
 
+  // A suspended guest profile must not be silently reactivated through guest mode.
+  if (guest?.account_status === 'SUSPENDED') {
+    throw new AuthError(403, 'account_suspended', 'This account is suspended. Contact CrediSafe support.');
+  }
+
   // Guest-mode requests must never authenticate an account that has a password.
   if (guest && (guest.account_type !== 'guest' || guest.password_hash)) {
     throw new AuthError(
@@ -243,7 +248,12 @@ export async function createSession(
   // Preserve trip/XP history when converting an existing guest profile.
   // The conditional update prevents two concurrent sign-ups from overwriting
   // the guest profile after both have read it.
-  if (deviceAccount && deviceAccount.account_type === 'guest' && !deviceAccount.password_hash) {
+  if (
+    deviceAccount &&
+    deviceAccount.account_status !== 'SUSPENDED' &&
+    deviceAccount.account_type === 'guest' &&
+    !deviceAccount.password_hash
+  ) {
     try {
       const updatedRows = await db('users')
         .where({ id: deviceId, account_type: 'guest' })
