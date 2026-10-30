@@ -30,10 +30,15 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
   }
 
   try {
-    const account = await db('users').select('account_status').where({ id: decoded.userId }).first();
+    const account = await db('users').select('account_status','session_version').where({ id: decoded.userId }).first();
     if (!account) {
       return res.status(401).json({
         error: { code: 'unauthorized', message: 'Account is no longer available' }
+      });
+    }
+    if (Number(decoded.sessionVersion ?? 0) !== Number(account.session_version ?? 0)) {
+      return res.status(401).json({
+        error: { code: 'session_revoked', message: 'This session is no longer active. Please sign in again.' }
       });
     }
     if (account.account_status === 'SUSPENDED') {
