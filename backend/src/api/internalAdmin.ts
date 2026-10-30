@@ -246,7 +246,7 @@ adminRouter.get('/users', async (req: AdminRequest, res) => {
 
 adminRouter.get('/users/:userId', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, USER_READ_ROLES)) return;
-  const { userId } = req.params;
+  const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   if (!isUuid(userId)) return res.status(400).json({ error: 'Invalid user ID' });
   try {
     const user = await db('users').select(
@@ -277,7 +277,7 @@ adminRouter.get('/users/:userId', async (req: AdminRequest, res) => {
 
 adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ['OWNER', 'ADMIN'])) return;
-  const { userId } = req.params;
+  const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
   if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
   try {
@@ -299,7 +299,7 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
 
 adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ['OWNER', 'ADMIN'])) return;
-  const { userId } = req.params;
+  const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
   if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
   try {
@@ -317,7 +317,7 @@ adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
 
 adminRouter.post('/users/:userId/revoke-sessions', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ['OWNER', 'ADMIN', 'SUPPORT'])) return;
-  const { userId } = req.params;
+  const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
   if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
   try {
@@ -351,7 +351,7 @@ adminRouter.get('/trips', async (req: AdminRequest, res) => {
 
 adminRouter.get('/trips/:tripId', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, TRIP_READ_ROLES)) return;
-  const { tripId } = req.params;
+  const tripId = typeof req.params.tripId === 'string' ? req.params.tripId : '';
   if (!isUuid(tripId)) return res.status(400).json({ error: 'Invalid trip ID' });
   try {
     const trip = await db('trips as t').leftJoin('users as u', 'u.id', 't.user_id')
