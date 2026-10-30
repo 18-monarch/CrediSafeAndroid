@@ -50,6 +50,32 @@ function legacyOverviewAuth(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+export function verifyAdminRequestSignature(
+  secret: string | undefined,
+  method: string,
+  path: string,
+  timestamp: string,
+  userId: string,
+  bootstrapOwner: boolean,
+  body: unknown,
+  signature: string,
+): boolean {
+  if (!secret || secret.length < 32 || !/^\\d{13}$/.test(timestamp) ||
+      !/^[a-f0-9]{64}$/i.test(signature) || !isUuid(userId)) return false;
+  const sentAt = Number(timestamp);
+  if (!Number.isFinite(sentAt) || Math.abs(Date.now() - sentAt) > 60_000) return false;
+  const normalizedBody = body && typeof body === 'object' ? body : {};
+  const bodyHash = createHash('sha256').update(JSON.stringify(normalizedBody)).digest('hex');
+  const payload = [
+    method.toUpperCase(), path, timestamp, userId,
+    bootstrapOwner ? '1' : '0', bodyHash,
+  ].join('\\n');
+  const expected = createHmac('sha256', secret).update(payload).digest('hex');
+  const supplied = Buffer.from(signature.toLowerCase(), 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  return supplied.length === expectedBuffer.length && timingSafeEqual(supplied, expectedBuffer);
+}
+
 async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunction) {
   const secret = process.env.CREDISAFE_ADMIN_BRIDGE_SECRET;
   const userId = req.header('x-admin-user-id') || '';
@@ -61,22 +87,9 @@ async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunct
     return res.status(401).json({ error: 'Invalid admin assertion' });
   }
 
-  const sentAt = Number(timestamp);
-  if (!Number.isFinite(sentAt) || Math.abs(Date.now() - sentAt) > 60_000) {
-    return res.status(401).json({ error: 'Expired admin assertion' });
-  }
-
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  const bodyHash = createHash('sha256').update(JSON.stringify(body)).digest('hex');
-  const payload = [
-    req.method.toUpperCase(), req.path, timestamp, userId,
-    bootstrapOwner ? '1' : '0', bodyHash,
-  ].join('\n');
-  const expected = createHmac('sha256', secret).update(payload).digest('hex');
-  const supplied = Buffer.from(signature.toLowerCase(), 'hex');
-  const expectedBuffer = Buffer.from(expected, 'hex');
-  if (supplied.length !== expectedBuffer.length || !timingSafeEqual(supplied, expectedBuffer)) {
-    return res.status(401).json({ error: 'Invalid admin signature' });
+  if (!verifyAdminRequestSignature(secret, req.method, req.path, timestamp, userId, bootstrapOwner, body, signature)) {
+    return res.status(401).json({ error: 'Invalid or expired admin signature' });
   }
 
   try {
@@ -408,7 +421,7 @@ const CONFIG_KEYS = new Set([
   'minimum_android_version', 'xp_ruleset_version',
 ]);
 
-function validConfigValue(key: string, value: unknown): boolean {
+export function validConfigValue(key: string, value: unknown): boolean {
   if (!CONFIG_KEYS.has(key)) return false;
   if (key === 'pilot_mode') return typeof value === 'boolean';
   if (key === 'feature_flags') {
