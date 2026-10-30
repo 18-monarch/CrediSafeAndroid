@@ -156,9 +156,9 @@ function maskEmail(value: string | null | undefined): string | null {
 function sanitizeDiagnostic(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   return value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi, '[email]')
-    .replace(/\\b[0-9a-f]{8}-[0-9a-f-]{27,}\\b/gi, '[id]')
-    .replace(/\\b(?:eyJ[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{48,})\\b/g, '[secret]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, '[id]')
+    .replace(/\b(?:eyJ[A-Za-z0-9_-]{20,}|[A-Za-z0-9_-]{48,})\b/g, '[secret]')
     .slice(0, 240);
 }
 async function writeAudit(
@@ -188,7 +188,7 @@ function validateConfig(key: string, value: any): boolean {
       (value.message === undefined || (typeof value.message === 'string' && value.message.length <= 240));
   }
   if (key === 'minimum_app_version') {
-    return typeof value.versionName === 'string' && /^\\d+\\.\\d+\\.\\d+(?:-[a-zA-Z0-9.-]+)?$/.test(value.versionName) &&
+    return typeof value.versionName === 'string' && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(value.versionName) &&
       Number.isInteger(value.versionCode) && value.versionCode >= 1 && typeof value.force === 'boolean';
   }
   if (key === 'feature_flags') {
@@ -211,12 +211,16 @@ internalAdminRouter.post('/team/bootstrap-owner', async (req, res) => {
     return res.status(400).json({ error: 'A valid owner user ID is required' });
   }
   try {
-    const current = await db('admin_members').where({ role: 'OWNER', status: 'ACTIVE' }).first();
-    if (current) {
-      if (current.user_id === userId) return res.json({ success: true, role: 'OWNER', alreadyBootstrapped: true });
-      return res.status(409).json({ error: 'An owner is already configured; use owner-managed team access' });
-    }
-    await db.transaction(async trx => {
+    const alreadyOwner = await db.transaction(async trx => {
+      // Serialize first-owner bootstrap attempts to avoid two simultaneous
+      // allowlisted requests creating multiple initial owners.
+      await trx.raw("SELECT pg_advisory_xact_lock(hashtext('credisafe_admin_owner_bootstrap'))");
+      const current = await trx('admin_members').where({ role: 'OWNER', status: 'ACTIVE' }).first();
+      if (current) {
+        if (current.user_id === userId) return true;
+        throw new Error('OWNER_ALREADY_CONFIGURED');
+      }
+
       const existing = await trx('admin_members').where({ user_id: userId }).forUpdate().first();
       if (existing?.status === 'ACTIVE' && existing.role !== 'OWNER') {
         throw new Error('OWNER_ID_ALREADY_ASSIGNED');
@@ -236,11 +240,15 @@ internalAdminRouter.post('/team/bootstrap-owner', async (req, res) => {
           request_id: randomUUID(), metadata: JSON.stringify({ role: 'OWNER' }),
         });
       }
+      return false;
     });
-    return res.json({ success: true, role: 'OWNER', alreadyBootstrapped: false });
+    return res.json({ success: true, role: 'OWNER', alreadyBootstrapped: alreadyOwner });
   } catch (error) {
     if (error instanceof Error && error.message === 'OWNER_ID_ALREADY_ASSIGNED') {
       return res.status(409).json({ error: 'This identity already has a different active team role' });
+    }
+    if (error instanceof Error && error.message === 'OWNER_ALREADY_CONFIGURED') {
+      return res.status(409).json({ error: 'An owner is already configured; use owner-managed team access' });
     }
     return res.status(503).json({ error: 'Owner bootstrap failed' });
   }
