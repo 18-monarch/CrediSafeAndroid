@@ -461,7 +461,7 @@ adminRouter.post('/xp/adjust', async (req: AdminRequest, res) => {
         user_id: userId, trip_id: null, category: 'ADMIN_ADJUSTMENT',
         points: delta, delta_xp: delta, reason: reason,
         engine_version: 'ADMIN_ADJUSTMENT_V1', ruleset_version: 'ADMIN_ADJUSTMENT_V1',
-        source_type: 'ADMIN_ADJUSTMENT', source_id: requestId, reason_code: 'ADMIN_ADJUSTMENT',
+        source_type: 'ADMIN_ADJUSTMENT', source_id: operationId, reason_code: 'ADMIN_ADJUSTMENT',
         decision_metadata: JSON.stringify({ actor: req.admin!.userId, previousTotalXp: previous, nextTotalXp: next, operationId, adminRequestId: req.admin!.requestId }),
       });
       await trx('users').where({ id: userId }).update({
