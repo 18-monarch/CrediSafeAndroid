@@ -389,13 +389,15 @@ internalAdminRouter.patch('/users/:userId/status', async (req, res) => {
     const updated = await db.transaction(async trx => {
       const user = await trx('users').where({ id: userId }).forUpdate().first();
       if (!user) throw new Error('NOT_FOUND');
-      await trx('users').where({ id: userId }).update({
+      const accountUpdate: Record<string, unknown> = {
         account_status: status,
         suspended_at: status === 'SUSPENDED' ? new Date() : null,
         suspended_by: status === 'SUSPENDED' ? actor.userId : null,
         suspension_reason: status === 'SUSPENDED' ? reason : null,
         updated_at: new Date(),
-      });
+      };
+      if (user.account_status !== status) accountUpdate.session_version = trx.raw('COALESCE(session_version, 0) + 1');
+      await trx('users').where({ id: userId }).update(accountUpdate);
       let revokedSessions = 0;
       if (status === 'SUSPENDED') {
         const rows = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at').update({ revoked_at: new Date() });
@@ -421,8 +423,9 @@ internalAdminRouter.post('/users/:userId/revoke-sessions', async (req, res) => {
     const result = await db.transaction(async trx => {
       const user = await trx('users').where({ id: userId }).first();
       if (!user) throw new Error('NOT_FOUND');
+      await trx('users').where({ id: userId }).update({ session_version: trx.raw('COALESCE(session_version, 0) + 1'), updated_at: new Date() });
       const count = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at').update({ revoked_at: new Date() });
-      await writeAudit(trx, actor, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { revokedSessions: Number(count ?? 0) });
+      await writeAudit(trx, actor, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { revokedSessions: Number(count ?? 0), accessTokensInvalidated: true });
       return { revokedSessions: Number(count ?? 0) };
     });
     return res.json(result);
