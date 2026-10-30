@@ -38,9 +38,9 @@ function makeRefreshToken(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function issueToken(userId: string) {
+function issueToken(userId: string, sessionId: string, sessionVersion: number) {
   const accessToken = jwt.sign(
-    { userId },
+    { userId, sessionId, sessionVersion },
     signingSecret(),
     {
       algorithm: 'HS256',
@@ -54,11 +54,15 @@ function issueToken(userId: string) {
 }
 
 async function issueSession(userId: string, deviceId: string) {
-  // Validate JWT signing configuration before writing a persistent refresh session.
-  const access = issueToken(userId);
+  // Bind both access and refresh credentials to one server-side session record.
+  // The session version supports immediate revocation of legacy access JWTs too.
+  const account = await db('users').select('session_version').where({ id: userId }).first();
+  if (!account) throw new Error('Cannot create a session for a missing account.');
+  const sessionId = randomUUID();
+  const access = issueToken(userId, sessionId, Number(account.session_version ?? 0));
   const refreshToken = makeRefreshToken();
   await db('auth_refresh_sessions').insert({
-    id: randomUUID(),
+    id: sessionId,
     user_id: userId,
     device_id: deviceId,
     token_hash: hashRefreshToken(refreshToken),
@@ -90,14 +94,14 @@ export async function refreshSession(deviceId: string, refreshToken: string) {
       throw new AuthError(401, 'session_expired', 'Please sign in again.');
     }
 
-    const account = await trx('users').select('account_status').where({ id: session.user_id }).first();
+    const account = await trx('users').select('account_status', 'session_version').where({ id: session.user_id }).first();
     if (!account || account.account_status === 'SUSPENDED') {
       throw new AuthError(403, 'account_suspended', 'This account is suspended. Contact CrediSafe support.');
     }
 
     // If signing configuration is invalid, issueToken throws and this transaction
     // rolls back without consuming the current refresh token.
-    const access = issueToken(session.user_id);
+    const access = issueToken(session.user_id, session.id, Number(account.session_version ?? 0));
     const nextToken = makeRefreshToken();
     await trx('auth_refresh_sessions').where({ id: session.id }).update({
       token_hash: hashRefreshToken(nextToken),
@@ -309,7 +313,7 @@ export function verifyToken(token: string) {
       algorithms: ['HS256'],
       issuer: 'credisafe-api',
       audience: 'credisafe-android',
-    }) as { userId: string; sub: string };
+    }) as { userId: string; sub: string; sessionId?: string; sessionVersion?: number };
   } catch {
     return null;
   }
