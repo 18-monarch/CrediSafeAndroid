@@ -298,7 +298,8 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ['OWNER', 'ADMIN'])) return;
   const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
-  if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
+  if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
     await db.transaction(async trx => {
       const user = await trx('users').where({ id: userId }).forUpdate().first();
@@ -310,7 +311,7 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
       });
       await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
-      await audit(trx, req.admin!.userId, 'USER_SUSPENDED', 'USER', userId, reason, {}, req.admin!.requestId);
+      await audit(trx, req.admin!.userId, 'USER_SUSPENDED', 'USER', userId, reason, {}, operationId!);
     });
     res.json({ success: true, accountStatus: 'SUSPENDED' });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to suspend account' }); }
@@ -320,7 +321,8 @@ adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ['OWNER', 'ADMIN'])) return;
   const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
-  if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
+  if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
     await db.transaction(async trx => {
       const user = await trx('users').where({ id: userId }).forUpdate().first();
@@ -328,7 +330,7 @@ adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
       await trx('users').where({ id: userId }).update({
         account_status: 'ACTIVE', suspended_at: null, suspension_reason: null, updated_at: new Date(),
       });
-      await audit(trx, req.admin!.userId, 'USER_RESTORED', 'USER', userId, reason, {}, req.admin!.requestId);
+      await audit(trx, req.admin!.userId, 'USER_RESTORED', 'USER', userId, reason, {}, operationId!);
     });
     res.json({ success: true, accountStatus: 'ACTIVE' });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to restore account' }); }
@@ -338,12 +340,13 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: AdminRequest, res
   if (!requireRoles(req, res, ['OWNER', 'ADMIN', 'SUPPORT'])) return;
   const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   const reason = reasonText(req.body?.reason);
-  if (!isUuid(userId) || !reason) return res.status(400).json({ error: 'Valid user ID and a reason of 8–500 characters are required' });
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
+  if (!isUuid(userId) || !reason || !operationId) return res.status(400).json({ error: 'Valid user ID, operation ID and a reason of 8–500 characters are required' });
   try {
     const count = await db.transaction(async trx => {
       const rows = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
-      await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows }, req.admin!.requestId);
+      await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows }, operationId!);
       return rows;
     });
     res.json({ success: true, sessionsRevoked: count });
@@ -422,14 +425,14 @@ adminRouter.post('/xp/adjust', async (req: AdminRequest, res) => {
   const userId = String(req.body?.userId || '');
   const delta = Number(req.body?.delta);
   const reason = reasonText(req.body?.reason);
-  const requestId = req.admin!.requestId;
-  if (!isUuid(userId) || !Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 500 || !reason) {
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
+  if (!isUuid(userId) || !Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 500 || !reason || !operationId) {
     return res.status(400).json({ error: 'Valid user, non-zero XP adjustment up to 500, and a reason of 8–500 characters are required' });
   }
   try {
     const result = await db.transaction(async trx => {
       const existing = await trx('xp_ledger').where({
-        user_id: userId, source_type: 'ADMIN_ADJUSTMENT', source_id: requestId,
+        user_id: userId, source_type: 'ADMIN_ADJUSTMENT', source_id: operationId,
         ruleset_version: 'ADMIN_ADJUSTMENT_V1',
       }).first();
       if (existing) return { duplicate: true, newTotalXp: null };
@@ -444,13 +447,13 @@ adminRouter.post('/xp/adjust', async (req: AdminRequest, res) => {
         points: delta, delta_xp: delta, reason: reason,
         engine_version: 'ADMIN_ADJUSTMENT_V1', ruleset_version: 'ADMIN_ADJUSTMENT_V1',
         source_type: 'ADMIN_ADJUSTMENT', source_id: requestId, reason_code: 'ADMIN_ADJUSTMENT',
-        decision_metadata: JSON.stringify({ actor: req.admin!.userId, previousTotalXp: previous, nextTotalXp: next, requestId }),
+        decision_metadata: JSON.stringify({ actor: req.admin!.userId, previousTotalXp: previous, nextTotalXp: next, operationId, adminRequestId: req.admin!.requestId }),
       });
       await trx('users').where({ id: userId }).update({
         total_xp: next, current_level: level.currentLevel, updated_at: new Date(),
       });
       await audit(trx, req.admin!.userId, 'XP_ADJUSTED', 'USER', userId, reason,
-        { delta, previousTotalXp: previous, nextTotalXp: next }, requestId);
+        { delta, previousTotalXp: previous, nextTotalXp: next }, operationId);
       return { duplicate: false, previousTotalXp: previous, newTotalXp: next, level: level.currentLevel };
     });
     res.json({ success: true, ...result });
@@ -490,7 +493,8 @@ adminRouter.post('/config', async (req: AdminRequest, res) => {
   const key = String(req.body?.key || '');
   const reason = reasonText(req.body?.reason);
   const value = req.body?.value;
-  if (!reason || !validConfigValue(key, value)) {
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
+  if (!reason || !operationId || !validConfigValue(key, value)) {
     return res.status(400).json({ error: 'Unsupported configuration key or invalid value; a reason is required' });
   }
   try {
@@ -502,7 +506,7 @@ adminRouter.post('/config', async (req: AdminRequest, res) => {
         updated_by: req.admin!.userId, reason, updated_at: new Date(),
       }).onConflict('config_key').merge();
       await audit(trx, req.admin!.userId, 'CONFIG_UPDATED', 'CONFIG', key, reason,
-        { version: nextVersion, previousValue: previous?.config_value ?? null, newValue: value }, req.admin!.requestId);
+        { version: nextVersion, previousValue: previous?.config_value ?? null, newValue: value }, operationId!);
       return { key, version: nextVersion };
     });
     res.json({ success: true, ...result });
@@ -526,8 +530,9 @@ adminRouter.post('/team', async (req: AdminRequest, res) => {
   const userId = String(req.body?.userId || '');
   const role = String(req.body?.role || '').toUpperCase() as AdminRole;
   const reason = reasonText(req.body?.reason);
+  const operationId = isUuid(req.body?.operationId) ? req.body.operationId : null;
   const status = req.body?.status === 'REVOKED' ? 'REVOKED' : 'ACTIVE';
-  if (!isUuid(userId) || !ROLES.includes(role) || !reason) {
+  if (!isUuid(userId) || !ROLES.includes(role) || !reason || !operationId) {
     return res.status(400).json({ error: 'Valid auth UUID, role, and reason of 8–500 characters are required' });
   }
   try {
@@ -548,7 +553,7 @@ adminRouter.post('/team', async (req: AdminRequest, res) => {
         role, status, created_by: req.admin!.userId, reason, updated_at: new Date(),
       });
       await audit(trx, req.admin!.userId, status === 'ACTIVE' ? 'TEAM_MEMBER_UPSERTED' : 'TEAM_MEMBER_REVOKED',
-        'ADMIN_MEMBER', userId, reason, { role, status }, req.admin!.requestId);
+        'ADMIN_MEMBER', userId, reason, { role, status }, operationId!);
       return { userId, role, status };
     });
     res.json({ success: true, member: result });
