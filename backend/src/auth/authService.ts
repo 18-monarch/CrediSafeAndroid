@@ -90,6 +90,11 @@ export async function refreshSession(deviceId: string, refreshToken: string) {
       throw new AuthError(401, 'session_expired', 'Please sign in again.');
     }
 
+    const account = await trx('users').select('account_status').where({ id: session.user_id }).first();
+    if (!account || account.account_status === 'SUSPENDED') {
+      throw new AuthError(403, 'account_suspended', 'This account is suspended. Contact CrediSafe support.');
+    }
+
     // If signing configuration is invalid, issueToken throws and this transaction
     // rolls back without consuming the current refresh token.
     const access = issueToken(session.user_id);
@@ -196,6 +201,9 @@ export async function createSession(
   let user = await db('users').whereRaw('LOWER(email) = ?', [email]).first();
 
   if (user) {
+    if (user.account_status === 'SUSPENDED') {
+      throw new AuthError(403, 'account_suspended', 'This account is suspended. Contact CrediSafe support.');
+    }
     if (user.password_hash) {
       const valid = await bcrypt.compare(password, user.password_hash);
       if (!valid) throw new AuthError(401, 'invalid_credentials', 'Incorrect email or password.');
