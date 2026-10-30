@@ -125,7 +125,7 @@ async function authorizeAdmin(req: Request, res: Response, permission: AdminPerm
       res.status(403).json({ error: 'Admin membership is inactive or has changed' });
       return null;
     }
-    if (!ROLE_PERMISSIONS[role].includes(permission)) {
+    if (!hasAdminRolePermission(role, permission)) {
       res.status(403).json({ error: 'This admin role cannot perform that operation' });
       return null;
     }
@@ -153,7 +153,7 @@ function maskEmail(value: string | null | undefined): string | null {
   const domain = value.slice(at + 1);
   return `${local.slice(0,1)}•••@${domain}`;
 }
-function sanitizeDiagnostic(value: unknown): string | null {
+export function sanitizeAdminDiagnostic(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   return value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
@@ -181,25 +181,32 @@ async function writeAudit(
     metadata: JSON.stringify(metadata),
   });
 }
-function validateConfig(key: string, value: any): boolean {
+export function isSupportedAdminConfig(key: string, value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const hasOnly = (keys: string[]) => Object.keys(record).every(name => keys.includes(name));
   if (key === 'maintenance_mode') {
-    return typeof value.enabled === 'boolean' &&
-      (value.message === undefined || (typeof value.message === 'string' && value.message.length <= 240));
+    return hasOnly(['enabled','message']) &&
+      typeof record.enabled === 'boolean' &&
+      (record.message === undefined || (typeof record.message === 'string' && record.message.length <= 240));
   }
   if (key === 'minimum_app_version') {
-    return typeof value.versionName === 'string' && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(value.versionName) &&
-      Number.isInteger(value.versionCode) && value.versionCode >= 1 && typeof value.force === 'boolean';
+    return hasOnly(['versionName','versionCode','force']) &&
+      typeof record.versionName === 'string' && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(record.versionName) &&
+      Number.isInteger(record.versionCode) && Number(record.versionCode) >= 1 && typeof record.force === 'boolean';
   }
   if (key === 'feature_flags') {
     const allowed = new Set(['new_onboarding','remote_update_prompt','rules_engine_v2','trip_diagnostics','ios_companion']);
-    return Object.entries(value).every(([name, enabled]) => allowed.has(name) && typeof enabled === 'boolean');
+    return Object.entries(record).every(([name, enabled]) => allowed.has(name) && typeof enabled === 'boolean');
   }
   if (key === 'pilot_controls') {
     const allowed = new Set(['android_pilot_enabled','web_gps_preview_enabled','automatic_updates_enabled']);
-    return Object.entries(value).every(([name, enabled]) => allowed.has(name) && typeof enabled === 'boolean');
+    return Object.entries(record).every(([name, enabled]) => allowed.has(name) && typeof enabled === 'boolean');
   }
   return false;
+}
+export function hasAdminRolePermission(role: AdminRole, permission: AdminPermission): boolean {
+  return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
 }
 
 // Owner bootstrap is only called by the Vercel server after Supabase getUser(),
@@ -510,7 +517,7 @@ internalAdminRouter.get('/trips/:tripId/diagnostics', async (req, res) => {
         engineVersion: trip.engine_version, roadZoneType: trip.road_zone_type, roadContextSource: trip.road_context_source,
         mobilityMode: trip.mobility_mode, mobilityConfidence: trip.mobility_confidence,
       },
-      sync: sync.map(s=>({status:s.sync_status,attempts:Number(s.attempt_count??0),diagnostic:sanitizeDiagnostic(s.last_error),recordedAt:s.synced_at})),
+      sync: sync.map(s=>({status:s.sync_status,attempts:Number(s.attempt_count??0),diagnostic:sanitizeAdminDiagnostic(s.last_error),recordedAt:s.synced_at})),
       telemetry: telemetry ? { sampleCount:Number(telemetry.sample_count),fileSizeBytes:Number(telemetry.file_size_bytes??0),checksumSha256:telemetry.checksum_sha256,compression:telemetry.compression,createdAt:telemetry.created_at } : null,
       events: events.map(e=>({timestampMs:Number(e.timestamp_ms),type:e.event_type,severity:e.severity,confidence:Number(e.confidence),speedKmh:e.speed_kmh==null?null:Number(e.speed_kmh)})),
       xp: xp.map(x=>({category:x.category,points:Number(x.points),deltaXp:x.delta_xp==null?null:Number(x.delta_xp),reasonCode:x.reason_code,sourceType:x.source_type,rulesetVersion:x.ruleset_version,engineVersion:x.engine_version,createdAt:x.created_at})),
@@ -569,7 +576,7 @@ internalAdminRouter.put('/config/:key', async (req, res) => {
   const value = req.body?.value;
   const reason = validReason(req.body?.reason);
   const expectedVersion = req.body?.expectedVersion;
-  if (!reason || !validateConfig(key,value) || (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 0))) {
+  if (!reason || !isSupportedAdminConfig(key,value) || (expectedVersion !== undefined && (!Number.isInteger(expectedVersion) || expectedVersion < 0))) {
     return res.status(400).json({ error: 'Unsupported configuration or invalid reason/value' });
   }
   try {
