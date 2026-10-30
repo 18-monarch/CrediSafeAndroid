@@ -311,8 +311,11 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
         return { duplicate: false };
       }
       await trx('users').where({ id: userId }).update({
-        account_status: 'SUSPENDED', suspended_at: new Date(),
-        suspension_reason: reason, updated_at: new Date(),
+        account_status: 'SUSPENDED',
+        session_version: trx.raw('session_version + 1'),
+        suspended_at: new Date(),
+        suspension_reason: reason,
+        updated_at: new Date(),
       });
       await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
@@ -359,6 +362,12 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: AdminRequest, res
     const result = await db.transaction(async trx => {
       const previous = await trx('admin_audit_logs').where({ request_id: operationId }).first();
       if (previous) return { sessionsRevoked: 0, duplicate: true };
+      const account = await trx('users').where({ id: userId }).forUpdate().first();
+      if (!account) throw Object.assign(new Error('User not found'), { status: 404 });
+      await trx('users').where({ id: userId }).update({
+        session_version: trx.raw('session_version + 1'),
+        updated_at: new Date(),
+      });
       const rows = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
       await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows }, operationId!);
