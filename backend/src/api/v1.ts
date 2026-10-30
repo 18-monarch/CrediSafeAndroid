@@ -66,6 +66,28 @@ router.post('/auth/logout', async (req, res) => {
   }
 });
 
+// 1c. Versioned, allow-listed remote configuration for signed-in app clients.
+// Only published values from the Operations Center are returned; no secrets are stored here.
+router.get('/config', authMiddleware, async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db('admin_config')
+      .select('config_key', 'config_value', 'version', 'updated_at')
+      .orderBy('config_key');
+    const config = Object.fromEntries(rows.map(row => [row.config_key, row.config_value]));
+    const version = rows.reduce((max, row) => Math.max(max, Number(row.version) || 0), 0);
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      version,
+      fetchedAt: new Date().toISOString(),
+      config,
+    });
+  } catch {
+    res.status(503).json({
+      error: { code: 'remote_config_unavailable', message: 'Configuration is temporarily unavailable.' },
+    });
+  }
+});
+
 // 2. Trips
 router.post('/trips', authMiddleware, async (req: AuthRequest, res) => {
   try {
