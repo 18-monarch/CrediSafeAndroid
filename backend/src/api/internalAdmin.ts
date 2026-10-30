@@ -216,8 +216,21 @@ adminRouter.get('/authz', (req: AdminRequest, res) => {
 
 adminRouter.get('/overview', async (req: AdminRequest, res) => {
   if (!requireRoles(req, res, ROLES)) return;
-  try { res.json(await getOverview()); }
-  catch { res.status(503).json({ error: 'Overview metrics temporarily unavailable' }); }
+  try {
+    const overview = await getOverview();
+    if (!USER_READ_ROLES.includes(req.admin!.role)) {
+      overview.recentUsers = overview.recentUsers.map((u: any) => ({
+        id: null,
+        name: 'Driver account',
+        accountType: u.accountType,
+        accountStatus: u.accountStatus,
+        createdAt: u.createdAt,
+        totalXp: u.totalXp,
+        level: u.level,
+      }));
+    }
+    res.json(overview);
+  } catch { res.status(503).json({ error: 'Overview metrics temporarily unavailable' }); }
 });
 
 adminRouter.get('/users', async (req: AdminRequest, res) => {
@@ -345,7 +358,10 @@ adminRouter.get('/trips', async (req: AdminRequest, res) => {
     if (q) query.where(builder => builder.whereRaw('t.id::text ILIKE ?', [`%${q}%`]).orWhereRaw('t.user_id::text ILIKE ?', [`%${q}%`]).orWhereILike('u.name', `%${q}%`));
     if (status) query.where('t.status', status);
     const rows = await query;
-    res.json({ trips: rows, count: rows.length });
+    const visibleTrips = USER_READ_ROLES.includes(req.admin!.role)
+      ? rows
+      : rows.map((trip: any) => ({ ...trip, user_id: null, user_name: null }));
+    res.json({ trips: visibleTrips, count: visibleTrips.length });
   } catch { res.status(503).json({ error: 'Trip directory unavailable' }); }
 });
 
@@ -368,6 +384,10 @@ adminRouter.get('/trips/:tripId', async (req: AdminRequest, res) => {
         .where({ trip_id: tripId }).orderBy('synced_at', 'desc').limit(10),
     ]);
     // This is a diagnostic view, not a raw route/telemetry export.
+    if (!USER_READ_ROLES.includes(req.admin!.role)) {
+      trip.user_id = null;
+      trip.user_name = null;
+    }
     res.json({ trip, metrics: metrics || null, eventGroups, xpLedger: ledger, syncHistory: sync });
   } catch { res.status(503).json({ error: 'Trip diagnostics unavailable' }); }
 });
@@ -383,7 +403,11 @@ adminRouter.get('/xp/ledger', async (req: AdminRequest, res) => {
         'x.delta_xp', 'x.points', 'x.reason', 'x.reason_code', 'x.ruleset_version', 'x.source_type', 'x.created_at')
       .orderBy('x.created_at', 'desc').limit(limit);
     if (userId) query.where('x.user_id', userId);
-    res.json({ entries: await query });
+    const entries = await query;
+    const visibleEntries = USER_READ_ROLES.includes(req.admin!.role)
+      ? entries
+      : entries.map((entry: any) => ({ ...entry, user_id: null, user_name: null }));
+    res.json({ entries: visibleEntries });
   } catch { res.status(503).json({ error: 'XP ledger unavailable' }); }
 });
 
