@@ -6,6 +6,7 @@ import { validate as isUuid } from 'uuid';
 import db from '../db/knex.js';
 import { classifyAuthUniqueViolation } from './authDatabaseErrors.js';
 import { createIndependentPasswordAccountId } from './registrationIdentity.js';
+import { accountSuspensionMessage } from './accountStatus.js';
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -20,6 +21,11 @@ export class AuthError extends Error {
     super(message);
     this.name = 'AuthError';
   }
+}
+
+function assertAccountActive(user: { account_status?: string | null } | null | undefined) {
+  const message = accountSuspensionMessage(user?.account_status);
+  if (message) throw new AuthError(403, 'account_suspended', message);
 }
 
 function signingSecret(): string {
@@ -90,6 +96,10 @@ export async function refreshSession(deviceId: string, refreshToken: string) {
       throw new AuthError(401, 'session_expired', 'Please sign in again.');
     }
 
+    const account = await trx('users').select('account_status').where({ id: session.user_id }).first();
+    if (!account) throw new AuthError(401, 'session_expired', 'Please sign in again.');
+    assertAccountActive(account);
+
     // If signing configuration is invalid, issueToken throws and this transaction
     // rolls back without consuming the current refresh token.
     const access = issueToken(session.user_id);
@@ -150,7 +160,10 @@ async function findGuestOrCreate(deviceId: string) {
     );
   }
 
-  if (guest) return guest;
+  if (guest) {
+    assertAccountActive(guest);
+    return guest;
+  }
 
   const candidate = {
     id: deviceId,
@@ -168,7 +181,10 @@ async function findGuestOrCreate(deviceId: string) {
     // A parallel guest request on the same installation may win the insert.
     // Re-read only that device row; never treat an unrelated duplicate as success.
     const existing = await db('users').where({ id: deviceId }).first();
-    if (existing && existing.account_type === 'guest' && !existing.password_hash) return existing;
+    if (existing && existing.account_type === 'guest' && !existing.password_hash) {
+      assertAccountActive(existing);
+      return existing;
+    }
     throwKnownDatabaseConflict(error);
     throw error;
   }
@@ -199,7 +215,9 @@ export async function createSession(
     if (user.password_hash) {
       const valid = await bcrypt.compare(password, user.password_hash);
       if (!valid) throw new AuthError(401, 'invalid_credentials', 'Incorrect email or password.');
+      assertAccountActive(user);
     } else {
+      assertAccountActive(user);
       // Existing pre-v2.7 accounts can only establish their first password
       // from the same installation that owns the legacy account UUID.
       if (user.id !== deviceId || !name) {
@@ -231,6 +249,7 @@ export async function createSession(
 
   const passwordHash = await bcrypt.hash(password, 12);
   const deviceAccount = await db('users').where({ id: deviceId }).first();
+  assertAccountActive(deviceAccount);
 
   // Preserve trip/XP history when converting an existing guest profile.
   // The conditional update prevents two concurrent sign-ups from overwriting
