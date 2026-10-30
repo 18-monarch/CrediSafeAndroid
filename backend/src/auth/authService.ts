@@ -232,8 +232,12 @@ export async function createSession(
         password_hash: passwordHash,
         account_type: 'password',
         name,
+        session_version: db.raw('session_version + 1'),
         updated_at: new Date(),
       });
+      // Existing guest sessions must not survive the conversion to credentials.
+      await db('auth_refresh_sessions').where({ user_id: user.id }).whereNull('revoked_at')
+        .update({ revoked_at: new Date() });
       user = await db('users').where({ id: user.id }).first();
       if (!user) throw new Error('Account lookup failed after legacy password setup.');
     }
@@ -267,10 +271,14 @@ export async function createSession(
           name,
           password_hash: passwordHash,
           account_type: 'password',
+          session_version: db.raw('session_version + 1'),
           updated_at: new Date(),
         });
 
       if (updatedRows > 0) {
+        // Invalidate guest access/refresh sessions before issuing the password session.
+        await db('auth_refresh_sessions').where({ user_id: deviceId }).whereNull('revoked_at')
+          .update({ revoked_at: new Date() });
         user = await db('users').where({ id: deviceId }).first();
       }
     } catch (error) {
