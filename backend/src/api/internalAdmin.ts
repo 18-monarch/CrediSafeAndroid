@@ -404,7 +404,7 @@ adminRouter.get('/trips/:tripId', async (req: AdminRequest, res) => {
         .where({ trip_id: tripId }).groupBy('event_type', 'severity'),
       db('xp_ledger').select('delta_xp', 'points', 'reason_code', 'reason', 'ruleset_version', 'decision_metadata', 'created_at')
         .where({ trip_id: tripId }).orderBy('created_at', 'desc'),
-      db('sync_audit').select('sync_status', 'attempt_count', 'last_error', 'synced_at')
+      db('sync_audit').select('sync_status', 'attempt_count', 'synced_at')
         .where({ trip_id: tripId }).orderBy('synced_at', 'desc').limit(10),
     ]);
     // This is a diagnostic view, not a raw route/telemetry export.
