@@ -32,6 +32,16 @@ function safeCount(value: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Only the first active Owner may be created through the bootstrap allowlist. */
+export function shouldBootstrapInitialOwner(
+  allowlisted: boolean,
+  requestPath: string,
+  memberExists: boolean,
+  activeOwnerCount: number,
+): boolean {
+  return allowlisted && requestPath === '/authz' && !memberExists && activeOwnerCount === 0;
+}
+
 function reasonText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const valueTrimmed = value.trim();
@@ -99,31 +109,48 @@ async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunct
 
   try {
     let member = await db('admin_members').where({ user_id: userId }).first();
-    // One-time owner bootstrap: Vercel signs this claim only for an exact UUID
-    // in its server-only CREDISAFE_ADMIN_USER_IDS allowlist.
+    // First-owner bootstrap is serialized so two allowlisted accounts cannot
+    // race to become Owner. Once an active Owner exists, this path is closed.
     if (!member && bootstrapOwner && req.path === '/authz') {
-      await db('admin_members').insert({
-        user_id: userId,
-        role: 'OWNER',
-        status: 'ACTIVE',
-        created_by: userId,
-        reason: 'Initial owner bootstrap',
-        created_at: new Date(),
-        updated_at: new Date(),
-      }).onConflict('user_id').ignore();
-      member = await db('admin_members').where({ user_id: userId }).first();
-      if (member) {
-        await db('admin_audit_logs').insert({
-          id: randomUUID(),
-          actor_user_id: userId,
-          action: 'TEAM_OWNER_BOOTSTRAP',
-          resource_type: 'ADMIN_MEMBER',
-          resource_id: userId,
+      await db.transaction(async trx => {
+        await trx.raw("SELECT pg_advisory_xact_lock(hashtext('credisafe:initial-owner-bootstrap:v1')::bigint)");
+        const existingMember = await trx('admin_members').where({ user_id: userId }).first();
+        const activeOwners = await trx('admin_members')
+          .where({ role: 'OWNER', status: 'ACTIVE' })
+          .count('* as count')
+          .first();
+
+        if (!shouldBootstrapInitialOwner(
+          bootstrapOwner,
+          req.path,
+          Boolean(existingMember),
+          safeCount(activeOwners?.count),
+        )) return;
+
+        const inserted = await trx('admin_members').insert({
+          user_id: userId,
+          role: 'OWNER',
+          status: 'ACTIVE',
+          created_by: userId,
           reason: 'Initial owner bootstrap',
-          request_id: requestId,
-          metadata: { role: 'OWNER' },
-        });
-      }
+          created_at: new Date(),
+          updated_at: new Date(),
+        }).onConflict('user_id').ignore().returning('user_id');
+
+        if (inserted.length > 0) {
+          await trx('admin_audit_logs').insert({
+            id: randomUUID(),
+            actor_user_id: userId,
+            action: 'TEAM_OWNER_BOOTSTRAP',
+            resource_type: 'ADMIN_MEMBER',
+            resource_id: userId,
+            reason: 'Initial owner bootstrap',
+            request_id: requestId,
+            metadata: { role: 'OWNER' },
+          });
+        }
+      });
+      member = await db('admin_members').where({ user_id: userId }).first();
     }
     if (!member || member.status !== 'ACTIVE' || !ROLES.includes(member.role)) {
       return res.status(403).json({ error: 'Admin access is not enabled for this account' });
