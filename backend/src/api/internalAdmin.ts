@@ -233,7 +233,14 @@ adminRouter.get('/users', async (req: AdminRequest, res) => {
     if (q) query.where(builder => builder.whereILike('name', `%${q}%`).orWhereILike('email', `%${q}%`).orWhereRaw('id::text ILIKE ?', [`%${q}%`]));
     if (status === 'ACTIVE' || status === 'SUSPENDED') query.where({ account_status: status });
     const rows = await query;
-    res.json({ users: rows, count: rows.length });
+    const visibleUsers = req.admin!.role === 'SUPPORT'
+      ? rows.map((u: any) => {
+          const email = typeof u.email === 'string' ? u.email : '';
+          const at = email.indexOf('@');
+          return { ...u, email: at > 1 ? `${email[0]}***${email.slice(at)}` : null };
+        })
+      : rows;
+    res.json({ users: visibleUsers, count: visibleUsers.length });
   } catch { res.status(503).json({ error: 'User directory unavailable' }); }
 });
 
@@ -248,6 +255,10 @@ adminRouter.get('/users/:userId', async (req: AdminRequest, res) => {
       'suspended_at', 'suspension_reason',
     ).where({ id: userId }).first();
     if (!user) return res.status(404).json({ error: 'User not found' });
+    if (req.admin!.role === 'SUPPORT' && typeof user.email === 'string') {
+      const at = user.email.indexOf('@');
+      user.email = at > 1 ? `${user.email[0]}***${user.email.slice(at)}` : null;
+    }
     const [trips, sessions, recentTrips, ledger] = await Promise.all([
       db('trips').where({ user_id: userId }).count('* as count').first(),
       db('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
@@ -492,9 +503,13 @@ adminRouter.post('/team', async (req: AdminRequest, res) => {
   try {
     const result = await db.transaction(async trx => {
       const existing = await trx('admin_members').where({ user_id: userId }).forUpdate().first();
-      if (existing?.role === 'OWNER' && status === 'REVOKED') {
+      const existingIsActiveOwner = existing?.role === 'OWNER' && existing?.status === 'ACTIVE';
+      const ownerIsBeingRemoved = existingIsActiveOwner && (role !== 'OWNER' || status !== 'ACTIVE');
+      if (ownerIsBeingRemoved) {
         const owners = await trx('admin_members').where({ role: 'OWNER', status: 'ACTIVE' }).count('* as count').first();
-        if (safeCount(owners?.count) <= 1) throw Object.assign(new Error('The last active owner cannot be revoked'), { status: 400 });
+        if (safeCount(owners?.count) <= 1) {
+          throw Object.assign(new Error('The last active owner cannot be demoted or revoked'), { status: 400 });
+        }
       }
       await trx('admin_members').insert({
         user_id: userId, role, status, created_by: req.admin!.userId,
