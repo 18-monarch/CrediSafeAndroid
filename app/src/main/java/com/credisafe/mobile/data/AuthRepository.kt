@@ -7,6 +7,7 @@ import com.credisafe.mobile.data.api.AuthRequest
 import com.credisafe.mobile.data.api.AuthApiErrorEnvelope
 import com.credisafe.mobile.data.api.CloudApi
 import com.credisafe.mobile.data.api.RefreshSessionRequest
+import com.credisafe.mobile.data.api.RemoteConfigResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -16,6 +17,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.io.IOException
@@ -58,6 +60,9 @@ class AuthRepository(context: Context, private val api: CloudApi) {
                             body.refreshExpiresIn
                         )
                     }
+                    // Remote configuration is best-effort. Login must still succeed
+                    // when the app is offline or the configuration endpoint is waking.
+                    runCatching { refreshRemoteConfig() }
                     Result.success(body.accessToken)
                 } else {
                     Result.failure(serverFailure(response))
@@ -188,6 +193,41 @@ class AuthRepository(context: Context, private val api: CloudApi) {
                 }
             }
         }
+
+    /**
+     * Fetch and securely cache the current allow-listed remote configuration.
+     * This cache contains feature metadata only, never credentials or session tokens.
+     */
+    suspend fun refreshRemoteConfig(): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val token = getValidAccessToken()
+                ?: return@withContext Result.failure(IllegalStateException("Sign in to refresh remote settings."))
+            val response = api.getRemoteConfig("Bearer $token")
+            val body = if (response.isSuccessful) response.body() else null
+            if (body == null) {
+                return@withContext Result.failure(IllegalStateException(
+                    "Remote settings are temporarily unavailable (HTTP ${response.code()})."
+                ))
+            }
+            val saved = prefs.edit()
+                .putString("remote_config_json", Json.encodeToString(body.config))
+                .putInt("remote_config_version", body.version)
+                .putLong("remote_config_fetched_at", System.currentTimeMillis())
+                .commit()
+            if (!saved) Result.failure(IllegalStateException("Remote settings could not be cached securely."))
+            else Result.success(body.version)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
+    }
+
+    fun getCachedRemoteConfigJson(): String? =
+        prefs.getString("remote_config_json", null)
+
+    fun getCachedRemoteConfigVersion(): Int =
+        prefs.getInt("remote_config_version", 0)
 
     private fun clearTokens() {
         prefs.edit()

@@ -74,7 +74,7 @@ app.use('/v1', v1Router);
 // WebSocket Server
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (request, socket, head) => {
+server.on('upgrade', async (request, socket, head) => {
   const url = new URL(request.url || '', `http://${request.headers.host}`);
   if (url.pathname.startsWith('/v1/live/trips/')) {
     const tripId = url.pathname.split('/').pop();
@@ -90,6 +90,40 @@ server.on('upgrade', (request, socket, head) => {
     const decoded = verifyToken(token);
     if (!decoded || !tripId) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    try {
+      const account = await db('users')
+        .select('account_status', 'session_version')
+        .where({ id: decoded.userId })
+        .first();
+      if (!account || account.account_status === 'SUSPENDED') {
+        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (Number(decoded.sessionVersion ?? 0) !== Number(account.session_version ?? 0)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+      if (decoded.sessionId) {
+        const activeSession = await db('auth_refresh_sessions')
+          .select('id')
+          .where({ id: decoded.sessionId, user_id: decoded.userId })
+          .whereNull('revoked_at')
+          .where('expires_at', '>', new Date())
+          .first();
+        if (!activeSession) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+      }
+    } catch {
+      socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
       socket.destroy();
       return;
     }

@@ -35,6 +35,9 @@ class AuthManager(context: Context) {
     fun hasSessionMaterial(): Boolean = repository.hasSessionMaterial()
     suspend fun getValidAccessToken(forceRefresh: Boolean = false): String? =
         repository.getValidAccessToken(forceRefresh)
+    suspend fun refreshRemoteConfig() = repository.refreshRemoteConfig()
+    fun getCachedRemoteConfigJson(): String? = repository.getCachedRemoteConfigJson()
+    fun getCachedRemoteConfigVersion(): Int = repository.getCachedRemoteConfigVersion()
     fun setSelectedVehicleId(id: String?) = repository.setSelectedVehicleId(id)
     fun getSelectedVehicleId(): String? = repository.getSelectedVehicleId()
     fun logout() = repository.logout()

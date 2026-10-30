@@ -1,9 +1,11 @@
 package com.credisafe.mobile.data.api
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
 
@@ -200,9 +202,20 @@ data class HealthResponse(
     val authReady: Boolean? = null,
 )
 
+@Serializable
+data class RemoteConfigResponse(
+    val version: Int,
+    val fetchedAt: String,
+    val config: Map<String, JsonElement>,
+)
+
+
 interface CloudApi {
     @GET("../health")
     suspend fun checkHealth(): Response<HealthResponse>
+
+    @GET("config")
+    suspend fun getRemoteConfig(@Header("Authorization") authorization: String): Response<RemoteConfigResponse>
 
     @POST("auth/session")
     suspend fun createSession(@Body request: AuthRequest): Response<AuthResponse>
