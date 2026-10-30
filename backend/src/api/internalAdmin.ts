@@ -60,7 +60,7 @@ export function verifyAdminRequestSignature(
   body: unknown,
   signature: string,
 ): boolean {
-  if (!secret || secret.length < 32 || !/^\\d{13}$/.test(timestamp) ||
+  if (!secret || secret.length < 32 || !/^\d{13}$/.test(timestamp) ||
       !/^[a-f0-9]{64}$/i.test(signature) || !isUuid(userId)) return false;
   const sentAt = Number(timestamp);
   if (!Number.isFinite(sentAt) || Math.abs(Date.now() - sentAt) > 60_000) return false;
@@ -69,7 +69,7 @@ export function verifyAdminRequestSignature(
   const payload = [
     method.toUpperCase(), path, timestamp, userId,
     bootstrapOwner ? '1' : '0', bodyHash,
-  ].join('\\n');
+  ].join('\n');
   const expected = createHmac('sha256', secret).update(payload).digest('hex');
   const supplied = Buffer.from(signature.toLowerCase(), 'hex');
   const expectedBuffer = Buffer.from(expected, 'hex');
