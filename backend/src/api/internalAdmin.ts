@@ -8,7 +8,7 @@ import { calculateLevelFromTotalXp } from '../services/xpEngineService.js';
 import db from '../db/knex.js';
 
 type AdminRole = 'OWNER' | 'ADMIN' | 'SUPPORT' | 'ANALYST' | 'AUDITOR';
-type AdminRequest = Request & { admin?: { userId: string; role: AdminRole } };
+type AdminRequest = Request & { admin?: { userId: string; role: AdminRole; requestId: string } };
 const ROLES: AdminRole[] = ['OWNER', 'ADMIN', 'SUPPORT', 'ANALYST', 'AUDITOR'];
 const USER_READ_ROLES: AdminRole[] = ['OWNER', 'ADMIN', 'SUPPORT'];
 const TRIP_READ_ROLES: AdminRole[] = ['OWNER', 'ADMIN', 'SUPPORT', 'ANALYST', 'AUDITOR'];
@@ -57,18 +57,19 @@ export function verifyAdminRequestSignature(
   timestamp: string,
   userId: string,
   bootstrapOwner: boolean,
+  requestId: string,
   body: unknown,
   signature: string,
 ): boolean {
   if (!secret || secret.length < 32 || !/^\d{13}$/.test(timestamp) ||
-      !/^[a-f0-9]{64}$/i.test(signature) || !isUuid(userId)) return false;
+      !/^[a-f0-9]{64}$/i.test(signature) || !isUuid(userId) || !isUuid(requestId)) return false;
   const sentAt = Number(timestamp);
   if (!Number.isFinite(sentAt) || Math.abs(Date.now() - sentAt) > 60_000) return false;
   const normalizedBody = body && typeof body === 'object' ? body : {};
   const bodyHash = createHash('sha256').update(JSON.stringify(normalizedBody)).digest('hex');
   const payload = [
     method.toUpperCase(), path, timestamp, userId,
-    bootstrapOwner ? '1' : '0', bodyHash,
+    bootstrapOwner ? '1' : '0', requestId, bodyHash,
   ].join('\n');
   const expected = createHmac('sha256', secret).update(payload).digest('hex');
   const supplied = Buffer.from(signature.toLowerCase(), 'hex');
@@ -81,14 +82,18 @@ async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunct
   const userId = req.header('x-admin-user-id') || '';
   const timestamp = req.header('x-admin-timestamp') || '';
   const signature = req.header('x-admin-signature') || '';
+  const requestId = req.header('x-admin-request-id') || '';
   const bootstrapOwner = req.header('x-admin-bootstrap-owner') === 'true';
-  if (!secret || secret.length < 32 || !isUuid(userId) ||
+  if (!secret || secret.length < 32 || !isUuid(userId) || !isUuid(requestId) ||
       !/^\d{13}$/.test(timestamp) || !/^[a-f0-9]{64}$/i.test(signature)) {
     return res.status(401).json({ error: 'Invalid admin assertion' });
   }
 
   const body = req.body && typeof req.body === 'object' ? req.body : {};
-  if (!verifyAdminRequestSignature(secret, req.method, req.path, timestamp, userId, bootstrapOwner, body, signature)) {
+  const signedPath = req.originalUrl.startsWith(req.baseUrl)
+    ? req.originalUrl.slice(req.baseUrl.length)
+    : req.path;
+  if (!verifyAdminRequestSignature(secret, req.method, signedPath, timestamp, userId, bootstrapOwner, requestId, body, signature)) {
     return res.status(401).json({ error: 'Invalid or expired admin signature' });
   }
 
@@ -115,6 +120,7 @@ async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunct
           resource_type: 'ADMIN_MEMBER',
           resource_id: userId,
           reason: 'Initial owner bootstrap',
+          request_id: requestId,
           metadata: { role: 'OWNER' },
         });
       }
@@ -122,7 +128,7 @@ async function signedAdminAuth(req: AdminRequest, res: Response, next: NextFunct
     if (!member || member.status !== 'ACTIVE' || !ROLES.includes(member.role)) {
       return res.status(403).json({ error: 'Admin access is not enabled for this account' });
     }
-    req.admin = { userId, role: member.role as AdminRole };
+    req.admin = { userId, role: member.role as AdminRole, requestId };
     res.set('Cache-Control', 'no-store, private');
     next();
   } catch {
@@ -304,7 +310,7 @@ adminRouter.post('/users/:userId/suspend', async (req: AdminRequest, res) => {
       });
       await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
-      await audit(trx, req.admin!.userId, 'USER_SUSPENDED', 'USER', userId, reason);
+      await audit(trx, req.admin!.userId, 'USER_SUSPENDED', 'USER', userId, reason, {}, req.admin!.requestId);
     });
     res.json({ success: true, accountStatus: 'SUSPENDED' });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to suspend account' }); }
@@ -322,7 +328,7 @@ adminRouter.post('/users/:userId/restore', async (req: AdminRequest, res) => {
       await trx('users').where({ id: userId }).update({
         account_status: 'ACTIVE', suspended_at: null, suspension_reason: null, updated_at: new Date(),
       });
-      await audit(trx, req.admin!.userId, 'USER_RESTORED', 'USER', userId, reason);
+      await audit(trx, req.admin!.userId, 'USER_RESTORED', 'USER', userId, reason, {}, req.admin!.requestId);
     });
     res.json({ success: true, accountStatus: 'ACTIVE' });
   } catch (error: any) { res.status(error.status || 503).json({ error: error.status ? error.message : 'Unable to restore account' }); }
@@ -337,7 +343,7 @@ adminRouter.post('/users/:userId/revoke-sessions', async (req: AdminRequest, res
     const count = await db.transaction(async trx => {
       const rows = await trx('auth_refresh_sessions').where({ user_id: userId }).whereNull('revoked_at')
         .update({ revoked_at: new Date() });
-      await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows });
+      await audit(trx, req.admin!.userId, 'USER_SESSIONS_REVOKED', 'USER', userId, reason, { sessionsRevoked: rows }, req.admin!.requestId);
       return rows;
     });
     res.json({ success: true, sessionsRevoked: count });
@@ -416,7 +422,7 @@ adminRouter.post('/xp/adjust', async (req: AdminRequest, res) => {
   const userId = String(req.body?.userId || '');
   const delta = Number(req.body?.delta);
   const reason = reasonText(req.body?.reason);
-  const requestId = isUuid(req.body?.requestId) ? req.body.requestId : randomUUID();
+  const requestId = req.admin!.requestId;
   if (!isUuid(userId) || !Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 500 || !reason) {
     return res.status(400).json({ error: 'Valid user, non-zero XP adjustment up to 500, and a reason of 8–500 characters are required' });
   }
@@ -496,7 +502,7 @@ adminRouter.post('/config', async (req: AdminRequest, res) => {
         updated_by: req.admin!.userId, reason, updated_at: new Date(),
       }).onConflict('config_key').merge();
       await audit(trx, req.admin!.userId, 'CONFIG_UPDATED', 'CONFIG', key, reason,
-        { version: nextVersion, previousValue: previous?.config_value ?? null, newValue: value });
+        { version: nextVersion, previousValue: previous?.config_value ?? null, newValue: value }, req.admin!.requestId);
       return { key, version: nextVersion };
     });
     res.json({ success: true, ...result });
@@ -542,7 +548,7 @@ adminRouter.post('/team', async (req: AdminRequest, res) => {
         role, status, created_by: req.admin!.userId, reason, updated_at: new Date(),
       });
       await audit(trx, req.admin!.userId, status === 'ACTIVE' ? 'TEAM_MEMBER_UPSERTED' : 'TEAM_MEMBER_REVOKED',
-        'ADMIN_MEMBER', userId, reason, { role, status });
+        'ADMIN_MEMBER', userId, reason, { role, status }, req.admin!.requestId);
       return { userId, role, status };
     });
     res.json({ success: true, member: result });
