@@ -476,7 +476,7 @@ adminRouter.get('/team', async (req: AdminRequest, res) => {
     }).select('m.user_id', 'm.role', 'm.status', 'm.reason', 'm.created_at', 'm.updated_at')
       .count('a.id as actions_count').groupBy('m.user_id', 'm.role', 'm.status', 'm.reason', 'm.created_at', 'm.updated_at')
       .orderBy('m.created_at', 'asc');
-    res.json({ members });
+    res.json({ currentUserId: req.admin!.userId, members });
   } catch { res.status(503).json({ error: 'Team directory unavailable' }); }
 });
 
