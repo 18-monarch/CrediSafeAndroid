@@ -59,3 +59,28 @@ CREATE TABLE IF NOT EXISTS public.admin_config (
   reason TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Audit records are append-only for application roles. Even accidental UPDATE
+-- or DELETE statements must fail; corrections are represented by new records.
+CREATE OR REPLACE FUNCTION public.prevent_admin_audit_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'admin_audit_logs is append-only';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'admin_audit_logs_immutable'
+      AND tgrelid = 'public.admin_audit_logs'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER admin_audit_logs_immutable
+      BEFORE UPDATE OR DELETE ON public.admin_audit_logs
+      FOR EACH ROW EXECUTE FUNCTION public.prevent_admin_audit_mutation();
+  END IF;
+END $$;
